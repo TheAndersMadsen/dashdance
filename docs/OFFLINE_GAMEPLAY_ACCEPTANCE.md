@@ -169,3 +169,15 @@ Melee → the classic CSS (mode 02:00), pick two characters, START → SSS
 (02:01), select Battlefield → in-game (02:02). The scene-gate blocks make
 this sequence robust to scene-entry timing; only the hover/select inputs per
 page need calibration against captures.
+
+## Save-notice stall on the hidden-window Metal frontend (2026-09-16, later runs)
+
+The headless gate passes this flow (main menu reached at retrace 459), but the
+hidden-window Metal frontend stalls on the same notice for thousands of frames.
+Most likely mechanism: the notice screen waits for the card write-completion
+callback, which is only delivered when the guest calls an HLE entry point that
+pumps the completion queue; with the window hidden, the render thread's
+backpressure slows that cadence and the notice lingers. Next step: deliver card
+completions on the retrace/pump path rather than relying on guest HLE polling,
+or confirm by running the same script with a visible window (where the notice
+dismissed in earlier manual tests).
