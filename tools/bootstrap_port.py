@@ -52,7 +52,15 @@ def main():
     codes = parser.add_mutually_exclusive_group(required=True)
     codes.add_argument("--gct-base", help="explicit guest load address for the pinned Slippi code set")
     codes.add_argument("--no-slippi", action="store_true", help="explicit vanilla-only diagnostic translation")
+    parser.add_argument("--playback", action="store_true",
+                        help="translate against the Slippi Playback code set (port/slippi_sys_playback) for replay re-simulation")
+    parser.add_argument("--extra-gct", type=Path, help="playback: a replay's code list (gecko_list.bin) to translate as well")
+    parser.add_argument("--extra-gct-base", help="playback: guest address where the game installs that list")
     args = parser.parse_args()
+    if (args.extra_gct is None) != (args.extra_gct_base is None):
+        parser.error("--extra-gct and --extra-gct-base go together")
+    if args.extra_gct and not args.playback:
+        parser.error("--extra-gct is only meaningful with --playback")
     if args.macos_arch and sys.platform != "darwin":
         parser.error("--macos-arch requires a macOS host/toolchain")
 
@@ -83,12 +91,12 @@ def main():
 
     generated = build / "generated/guest"
     generated.mkdir(parents=True, exist_ok=True)
-    sys_dir = ROOT / PINS["slippi"]["sys_dir"]
+    sys_dir = ROOT / ("port/slippi_sys_playback" if args.playback else PINS["slippi"]["sys_dir"])
     slippi_inputs = []
     # Both Slippi-enabled and vanilla translation profiles use the same explicit
     # runtime asset tree; --no-slippi changes guest patch generation only.
     slippi_sys_hashes = sys_file_hashes(sys_dir)
-    if not args.no_slippi:
+    if not args.no_slippi and not args.playback:  # the pins describe the online code set
         for relative, expected in PINS["slippi"]["files_sha256"].items():
             path = sys_dir / relative
             if not path.is_file() or sha(path) != expected:
@@ -97,7 +105,7 @@ def main():
     # Runtime GameFiles/diffs must match the same upstream source commit,
     # including inventory. Do not accept a dirty replacement Sys tree.
     tracked = subprocess.check_output(["git", "-C", str(ROOT), "ls-tree", "-r", "--name-only",
-        PINS["upstream"]["commit"], "--", PINS["slippi"]["sys_dir"]], text=True).splitlines()
+        PINS["upstream"]["commit"], "--", str(sys_dir.relative_to(ROOT))], text=True).splitlines()
     actual = {str((sys_dir / relative).relative_to(ROOT)) for relative in slippi_sys_hashes}
     if actual != set(tracked):
         parser.error("Slippi Sys file inventory differs from the pinned upstream commit")
@@ -115,6 +123,8 @@ def main():
         command.append("--no-slippi")
     else:
         command += ["--sys-dir", sys_dir, "--gct-base", args.gct_base]
+        if args.extra_gct:
+            command += ["--extra-gct", args.extra_gct.resolve(strict=True), "--extra-gct-base", args.extra_gct_base]
         print("Slippi GCT base is a build-profile assumption; verify the actual guest load address at runtime.", flush=True)
     run(command)
     fobj = build / "generated/FObjHost.cpp"
@@ -135,7 +145,8 @@ def main():
         "decomp_pin": PINS["decomp"], "decomp_root": str(decomp),
         "dol": {"path": str(dol), "sha1": PINS["dol"]["sha1"]},
         "gct_base": args.gct_base, "gct_base_runtime_verified": False,
-        "slippi_enabled": not args.no_slippi,
+        "slippi_enabled": not args.no_slippi, "playback": args.playback,
+        "extra_gct": {"path": str(args.extra_gct), "sha256": sha(args.extra_gct), "base": args.extra_gct_base} if args.extra_gct else None,
         "requested_build": {"frontend": args.frontend, "build_type": args.build_type,
                             "generator": args.cmake_generator, "macos_arch": args.macos_arch,
                             "transport_tests": args.transport_tests},

@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <climits>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -121,6 +122,24 @@ void character_frame_data(const Slippi::FrameData* frame, uint8_t port, bool fol
   append_f32(q, d.percent);
   q.push_back(d.cstickXRaw); q.push_back(d.cstickYRaw);
 }
+// Desync forensics (tools/mac/ramdiff.py): MELEE_RAM_DUMP_FRAMES=1056,1057 and MELEE_RAM_DUMP_DIR=<dir> write
+// guest RAM as <dir>/ram_<frame>.bin the first time the game asks for that frame's inputs. Slippi Dolphin is
+// dumped at the same point (CEXISlippi::prepareFrameData), so the two files are directly comparable.
+void dump_ram_if_requested(int32_t frame) {
+  static const std::vector<int32_t> frames = [] {
+    std::vector<int32_t> out;
+    if (const char* v = std::getenv("MELEE_RAM_DUMP_FRAMES"))
+      for (const char* p = v; *p;) { char* end; long n = std::strtol(p, &end, 10); if (end == p) break; out.push_back((int32_t)n); p = *end ? end + 1 : end; }
+    return out;
+  }();
+  static std::vector<int32_t> done;
+  const char* dir = std::getenv("MELEE_RAM_DUMP_DIR");
+  if (!dir || std::find(frames.begin(), frames.end(), frame) == frames.end() ||
+      std::find(done.begin(), done.end(), frame) != done.end()) return;
+  done.push_back(frame);
+  std::string path = std::string(dir) + "/ram_" + std::to_string(frame) + ".bin";
+  if (FILE* f = std::fopen(path.c_str(), "wb")) { std::fwrite(host::ram, 1, 0x01800000u, f); std::fclose(f); host::log("playback: RAM at frame %d written to %s", frame, path.c_str()); }
+}
 }  // namespace
 
 void set_replay(const std::string& path) { g_path = path; }
@@ -180,6 +199,7 @@ void prepare_frame_data(const uint8_t* payload, std::vector<uint8_t>& q) {
   q.clear();
   if (!g_game) return;
   int32_t frame = (int32_t)((uint32_t)payload[0] << 24 | (uint32_t)payload[1] << 16 | (uint32_t)payload[2] << 8 | payload[3]);
+  dump_ram_if_requested(frame);
   bool complete = g_game->IsProcessingComplete();
   bool found = g_game->DoesFrameExist(frame);
   bool fully = false;

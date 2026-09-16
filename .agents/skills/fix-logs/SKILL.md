@@ -1,6 +1,6 @@
 ---
 name: fix-logs
-description: Review Dashdance session logs and crash reports that nobody has looked at yet, turn what they show into issues, fix them one commit at a time, rebuild, and keep docs/MAC_FIXES.md and docs/PR.md current. Use when Christopher says "/fix-logs", "check the logs", "look at my crashes", "I had a desync/disconnect/crash", or "fix what broke".
+description: Review Dashdance session logs and crash reports that nobody has looked at yet, turn what they show into issues, fix them one commit at a time, rebuild, and keep docs/MAC_FIXES.md and docs/PR.md current. Desyncs are diagnosed against real Melee with the tools/mac desync pipeline (desync.md). Use when Christopher says "/fix-logs", "check the logs", "look at my crashes", "I had a desync/disconnect/crash", "it desynced again", or "fix what broke".
 ---
 
 # fix-logs
@@ -24,8 +24,12 @@ session still being written if Dashdance is running. If it prints "Nothing unrev
 For each file, open the full log around the flagged lines, not just the grep. Match a crash report to its
 session log by time (the `.ips` timestamp falls inside the session). Classify:
 
-- **Crash**: `FATAL` reason, the "recent function entries" list, the `.ips` stack.
-- **Desync**: `DESYNC: checksum mismatch at frame N`. Note the frame and which player.
+- **Crash**: `FATAL` reason, the guest call stack, the `.ips` stack. Follow [crash.md](crash.md): the
+  session's `.ram` snapshot and `tools/mac/crashram.py` show the object that broke and who points at it.
+- **Desync**: `DESYNC: checksum mismatch at frame N`. Note the frame and which player, then follow
+  [desync.md](desync.md): `tools/mac/desync.py <replay>` finds the first divergent frame against Slippi
+  Dolphin, whether Dashdance reproduces it offline, and whether state or code diverged. Never guess a desync
+  cause from the log alone.
 - **Disconnect**: who dropped. `got disconnect from peer` or `force-disconnecting player N after 7 s stall`
   means the other side went away; `online connection failed` or our own stall means it may be us.
   Christopher suspects some disconnects were his side, so say which it was and why.
@@ -36,10 +40,14 @@ row, not a new row. Group files that show the same failure.
 
 ## 3. Fix, one issue at a time
 
-Work the issue with the most evidence first. Read the code before changing it. Make the smallest change
+Work the issue with the most evidence first. Read the code before changing it. For a desync, the fix
+is verified only when `dashdance_resim.py` on that replay matches Slippi Dolphin's `resim.slp` on every frame
+and a clean Slippi Dolphin replay still matches its own recording (desync.md, step 2). Make the smallest change
 that could go upstream, following the repo's CLAUDE.md rules (the pinned-input manifest, strict AOT, no
 game data in the tree). If the root cause is not provable from the evidence, don't guess a fix: add the
-logging that would prove it next time, commit that, and say so.
+logging or tooling that would prove it next time, commit that, and say so. New diagnostic tools go in
+`tools/mac/` and get written up in desync.md or crash.md (or a new sibling note linked here), so the next run
+can use them.
 
 For each fix:
 
@@ -48,7 +56,8 @@ For each fix:
    If Dashdance is running it only builds, and `tools/mac/rebuild.sh --install-only` installs later.
 3. Commit that fix alone. The message says what broke, the evidence, and why the change fixes it.
 4. Move or add the row in `docs/MAC_FIXES.md` (Fixed, with the short commit hash), and add one bullet to
-   `docs/PR.md` under "What this changes". Commit those docs changes.
+   `docs/PR.md` under the matching section (Fixes, Features, Logging, Debugging tools). Anything else
+   you add to the repo, such as a tool or logging, gets a plain bullet too. Commit those docs changes.
 5. `git push fork christopher/mac-fixes`.
 
 A fix is "confirmed" only after Christopher has played through the case again. Until then say

@@ -98,6 +98,8 @@ target_include_directories(port_pad_rumble_test PRIVATE runtime/hle)
 add_test(NAME port_pad_rumble COMMAND port_pad_rumble_test)
 add_test(NAME port_gecko_absorbed_hooks COMMAND "${Python3_EXECUTABLE}"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/gecko_absorbed_hooks_test.py")
+add_test(NAME port_return_adjust COMMAND "${Python3_EXECUTABLE}"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/return_adjust_test.py")
 
 add_executable(port_slippi_game_file_test tests/slippi_game_file_test.cpp)
 target_include_directories(port_slippi_game_file_test PRIVATE runtime/hle)

@@ -170,6 +170,7 @@ int g_frames_to_skip = 0, g_frames_to_advance = 0, g_fall_behind = 0, g_fall_far
 bool g_currently_skipping = false, g_currently_advancing = false;
 std::mt19937 g_rng((uint32_t)time_ms());
 uint64_t g_rollbacks = 0;
+int32_t g_current_online_frame = 0;   // for the rollback log line
 bool g_in_online_match = false;
 // Determinism oracle: the game hands us a checksum of its finalized state each frame and the
 // opponent's client sends theirs; a mismatch is a desync between the two simulations.
@@ -390,6 +391,7 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
     q.push_back(3);
     return;
   }
+  g_current_online_frame = frame;
   if (frame % 30 == 0) host::log("slippi: online frame %d wall %.3f s retrace %u rollbacks %llu", frame, host::now_seconds(), host::retrace_count(), (unsigned long long)g_rollbacks);
   if (finalized > 0 && finalized_checksum) { g_local_checksums[finalized] = finalized_checksum; while (g_local_checksums.size() > 600) g_local_checksums.erase(g_local_checksums.begin()); }
   g_netplay->DropOldRemoteInputs(finalized);
@@ -423,6 +425,8 @@ void handle_load_savestate(const uint8_t* payload) {
   for (int i = 4; be32(payload + i) != 0; i += 8) blocks.push_back({be32(payload + i), be32(payload + i + 4)});
   g_active_savestates[frame]->Load(blocks);
   ++g_rollbacks;
+  // One line per rollback: a crash or desync right after one points at savestate coverage.
+  host::log("slippi: rollback to frame %d from frame %d (%zu preserved blocks)", frame, g_current_online_frame, blocks.size());
   for (auto& kv : g_active_savestates) g_available_savestates.push_back(std::move(kv.second));
   g_active_savestates.clear();
 }

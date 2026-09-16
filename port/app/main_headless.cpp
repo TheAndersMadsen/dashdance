@@ -14,6 +14,7 @@
 #include "host.h"
 #include "numeric.h"
 #include "slippi_online.h"
+#include "slippi_playback.h"
 #include "window.h"
 #include <cstdio>
 #include <exception>
@@ -56,6 +57,7 @@ int main(int argc, char** argv) {
   }
   if (!host::prepare_headless_outputs(launch, error)) { std::fprintf(stderr, "%s\n", error.c_str()); return 2; }
   host::options = launch.runtime;
+  if (!launch.replay.empty()) slippi::playback::set_replay(launch.replay);  // needs a --playback translation
   slippi::online::config().offline = true;
   slippi::online::config().user_dir = host::options.profile_dir;
   ppc::set_interpreter_allowed(launch.allow_interpreter);
@@ -91,7 +93,7 @@ int main(int argc, char** argv) {
   };
   host::log("Melee Unlocked %s: offline headless AOT gate", MELEE_PORT_VERSION);
   host::log("capabilities: guest CPU/HLE/GX decoding active; window, GPU presentation, physical input, audio device and online services unavailable");
-  host::log("input: %s", launch.script.empty() ? "neutral controller on port 1" : "deterministic controller script");
+  host::log("input: %s", !launch.replay.empty() ? "replay playback" : launch.script.empty() ? "neutral controller on port 1" : "deterministic controller script");
   host::log("execution: strict_aot=%s, frames=%u, time_base=%llu, fp_profile=%s",
             launch.allow_interpreter ? "false (diagnostic interpreter allowed)" : "true", host::options.frames,
             static_cast<unsigned long long>(host::options.time_base), ppc::fp_profile_name(ppc::fp_profile()));

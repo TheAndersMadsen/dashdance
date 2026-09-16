@@ -74,7 +74,7 @@ const char* headless_usage() {
   return "melee_port_headless --offline --iso ABS_FILE --sys-dir ABS_DIR\n"
          "  --frames 1..36000 --time-base UINT64\n"
          "  --profile-dir ABS_FRESH_DIR --card-dir ABS_FRESH_DIR --cache-dir ABS_FRESH_DIR\n"
-         "  [--fast] [--script ABS_FILE] [--strict-aot | --allow-interpreter]\n"
+         "  [--fast] [--script ABS_FILE | --replay ABS_FILE] [--strict-aot | --allow-interpreter]\n"
          "  [--state-trace ABS_CACHE_FILE] [--audio-dump ABS_CACHE_FILE] [--log-file ABS_CACHE_FILE]\n"
          "  [--trace-calls] [--hang-watch 1..60] [--validate-only]\n"
          "  [--expect-scene 0xSSMM] [--gx-capture ABS_CACHE_FILE --gx-capture-sequence N]\n"
@@ -110,6 +110,7 @@ HeadlessParse parse_headless_options(int argc, const char* const* argv, Headless
       else if (flag == "--card-dir") parsed.runtime.card_dir = value;
       else if (flag == "--cache-dir") parsed.runtime.cache_dir = value;
       else if (flag == "--script") parsed.script = value;
+      else if (flag == "--replay") parsed.replay = value;
       else if (flag == "--state-trace") parsed.runtime.state_trace = value;
       else if (flag == "--audio-dump") parsed.runtime.audio_dump = value;
       else if (flag == "--log-file") parsed.runtime.log_file = value;
@@ -140,11 +141,13 @@ HeadlessParse parse_headless_options(int argc, const char* const* argv, Headless
   if (!parsed.runtime.frames) return fail("an explicit bounded --frames value is required");
   if (!parsed.runtime.time_base_set) return fail("an explicit --time-base is required");
   if (seen.count("--strict-aot") && seen.count("--allow-interpreter")) return fail("choose one interpreter policy");
+  if (seen.count("--script") && seen.count("--replay")) return fail("choose an input script or a replay, not both");
   if (seen.count("--gx-capture-sequence") && parsed.gx_capture.empty()) return fail("--gx-capture-sequence requires --gx-capture");
   if (!parsed.gx_capture.empty() && parsed.gx_capture_sequence > parsed.runtime.frames) return fail("capture sequence cannot exceed --frames");
   if (!existing_input(parsed.runtime.iso, "--iso", false, error) ||
       !existing_input(parsed.runtime.sys_dir, "--sys-dir", true, error) ||
-      (!parsed.script.empty() && !existing_input(parsed.script, "--script", false, error))) return HeadlessParse::Error;
+      (!parsed.script.empty() && !existing_input(parsed.script, "--script", false, error)) ||
+      (!parsed.replay.empty() && !existing_input(parsed.replay, "--replay", false, error))) return HeadlessParse::Error;
   if (!fresh_directory(parsed.runtime.profile_dir, "--profile-dir", error) ||
       !fresh_directory(parsed.runtime.card_dir, "--card-dir", error) ||
       !fresh_directory(parsed.runtime.cache_dir, "--cache-dir", error)) return HeadlessParse::Error;

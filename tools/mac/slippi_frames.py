@@ -32,8 +32,6 @@ import time
 import uuid
 from pathlib import Path
 
-from PIL import Image
-
 ROOT = Path(__file__).resolve().parents[2]
 PLAYBACK_APP = Path.home() / "Library/Application Support/Slippi Launcher/playback/Slippi Dolphin.app"
 PLAYBACK_USER = Path.home() / "Library/Application Support/com.project-slippi.dolphin/playback/User"
@@ -97,36 +95,27 @@ def set_ini(path, values):
 
 def is_waiting_screen(png):
     """Pre-roll frames are black or the "Waiting for game" text; gameplay always has a lit stage and HUD."""
+    from PIL import Image  # imported here so slippi_ram.py can reuse this module under Xcode's Python
     hist = Image.open(png).convert("L").histogram()
     return sum(hist[40:]) / sum(hist) < 0.05
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("replay", type=Path)
-    ap.add_argument("start", type=int)
-    ap.add_argument("end", type=int)
-    ap.add_argument("--out", type=Path, help="default: reports/slippi-frames/<replay>-<start>-<end>")
-    ap.add_argument("--resync", action="store_true", help="let playback snap positions to the recorded ones")
-    ap.add_argument("--scale", type=int, default=4, help="Dolphin EFBScale: 2 = native 640x528, 4 = 2x (default)")
-    ap.add_argument("--iso", type=Path, help="default: the path in .disc-path")
-    ap.add_argument("--timeout", type=int, default=600, help="seconds before giving up")
-    ap.add_argument("--keep-work", action="store_true", help="keep the Dolphin user dir and raw dumps")
-    args = ap.parse_args()
-
-    replay = args.replay.expanduser().resolve()
+def run(replay, start, end, out, resync=False, scale=4, iso=None, timeout=600, keep_work=False, frames=True):
+    """Play START..END of REPLAY in Slippi Dolphin. Writes out/frame_<n>.png (when frames) and out/resim.slp.
+    Returns (frames written, last frame played, the replay's last frame)."""
+    replay = Path(replay).expanduser().resolve()
     if not replay.exists():
         die(f"no replay at {replay}")
-    if args.end < args.start:
+    if end < start:
         die("END is before START")
-    iso = args.iso or Path((ROOT / ".disc-path").read_text().strip())
-    out = args.out or ROOT / "reports/slippi-frames" / f"{replay.stem}-{args.start}-{args.end}"
+    iso = iso or Path((ROOT / ".disc-path").read_text().strip())
+    out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     for old in out.glob("frame_*.png"):
         old.unlink()
 
     binary = patched_app()
-    work = CACHE / "runs" / time.strftime("%Y%m%d-%H%M%S")
+    work = CACHE / "runs" / f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     user = work / "User"
     if PLAYBACK_USER.exists():
         shutil.copytree(PLAYBACK_USER, user, ignore=shutil.ignore_patterns("Logs", "Cache", "ScreenShots", "StateSaves", "Dump"))
@@ -136,7 +125,7 @@ def main():
     regen = work / "regen"
     regen.mkdir()
     set_ini(user / "Config/Dolphin.ini", {
-        ("Movie", "DumpFrames"): "True",
+        ("Movie", "DumpFrames"): str(frames),
         ("Movie", "DumpFramesSilent"): "True",
         ("Core", "EmulationSpeed"): "0.00000000",
         ("Core", "SlippiSaveReplays"): "True",
@@ -154,12 +143,12 @@ def main():
     set_ini(user / "Config/GFX.ini", {
         ("Settings", "DumpFramesAsImages"): "True",
         ("Settings", "InternalResolutionFrameDumps"): "True",
-        ("Settings", "EFBScale"): str(args.scale),
+        ("Settings", "EFBScale"): str(scale),
     })
     comm = work / "comm.json"
     comm.write_text(json.dumps({
         "mode": "normal", "replay": str(replay), "commandId": uuid.uuid4().hex,
-        "startFrame": args.start, "endFrame": args.end, "shouldResync": args.resync,
+        "startFrame": start, "endFrame": end, "shouldResync": resync,
     }))
 
     log = open(work / "dolphin.out", "w")
@@ -168,7 +157,7 @@ def main():
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
     os.set_blocking(proc.stdout.fileno(), False)
     played, game_end, pending = [], None, b""
-    deadline, last_frame_at = time.time() + args.timeout, None
+    deadline, last_frame_at = time.time() + timeout, None
     try:
         while True:
             chunk = proc.stdout.read(65536) or b""
@@ -201,27 +190,45 @@ def main():
 
     if not played:
         die(f"Dolphin never played a frame; output is in {work / 'dolphin.out'}")
-    images = sorted(frames_dir.glob("framedump_*.png"), key=lambda p: int(p.stem.split("_")[1]))
-    first = next((i for i, p in enumerate(images) if not is_waiting_screen(p)), None)
-    if first is None or len(images) - first < len(played):
-        die(f"{len(played)} frames played but only {len(images) - (first or 0)} gameplay images dumped in {frames_dir}")
     if played != list(range(played[0], played[0] + len(played))):
         die("Dolphin skipped or repeated a frame number; the image-to-frame mapping would be wrong")
-    last = min(args.end, game_end if game_end is not None else args.end)
+    last = min(end, game_end if game_end is not None else end)
     written = 0
-    for frame, image in zip(played, images[first:]):
-        if args.start <= frame <= last:
-            shutil.move(str(image), out / f"frame_{frame}.png")
-            written += 1
+    if frames:
+        images = sorted(frames_dir.glob("framedump_*.png"), key=lambda p: int(p.stem.split("_")[1]))
+        first = next((i for i, p in enumerate(images) if not is_waiting_screen(p)), None)
+        if first is None or len(images) - first < len(played):
+            die(f"{len(played)} frames played but only {len(images) - (first or 0)} gameplay images dumped in {frames_dir}")
+        for frame, image in zip(played, images[first:]):
+            if start <= frame <= last:
+                shutil.move(str(image), out / f"frame_{frame}.png")
+                written += 1
     regenerated = sorted(regen.glob("*.slp"))
     if regenerated:
         shutil.move(str(regenerated[-1]), out / "resim.slp")
-    if not args.keep_work:
+    if not keep_work:
         shutil.rmtree(work, ignore_errors=True)
+    return written, last, game_end
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("replay", type=Path)
+    ap.add_argument("start", type=int)
+    ap.add_argument("end", type=int)
+    ap.add_argument("--out", type=Path, help="default: reports/slippi-frames/<replay>-<start>-<end>")
+    ap.add_argument("--resync", action="store_true", help="let playback snap positions to the recorded ones")
+    ap.add_argument("--scale", type=int, default=4, help="Dolphin EFBScale: 2 = native 640x528, 4 = 2x (default)")
+    ap.add_argument("--iso", type=Path, help="default: the path in .disc-path")
+    ap.add_argument("--timeout", type=int, default=600, help="seconds before giving up")
+    ap.add_argument("--keep-work", action="store_true", help="keep the Dolphin user dir and raw dumps")
+    args = ap.parse_args()
+    out = args.out or ROOT / "reports/slippi-frames" / f"{args.replay.stem}-{args.start}-{args.end}"
+    written, last, game_end = run(args.replay, args.start, args.end, out, args.resync, args.scale, args.iso,
+                                  args.timeout, args.keep_work)
     print(f"{written} frames ({args.start}..{last}) in {out}" + ("" if args.resync else ", resync off"))
     if last < args.end:
         print(f"the replay ends at frame {game_end}")
-
 
 if __name__ == "__main__":
     main()

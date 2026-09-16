@@ -33,6 +33,8 @@ class FuncInfo:
         self.bad = []             # undecodable words
         self.has_bctrl = False
         self.has_blrl = False
+        self.return_adjusts = set()  # N where this function can return to its caller's return address + N
+        self.adjusted_returns = {}   # call-site return addr -> addresses a callee may return to instead
 
 
 _WRITERS = ("addi", "addis", "or", "lwz", "lwzx", "lbz", "lhz", "add", "subf", "rlwinm", "mulli",
@@ -177,6 +179,33 @@ def _data_scan_tables(dol, func, claimed):
     return sorted(targets)
 
 
+def _return_adjust(insns, idx):
+    """For `mtlr rS` at idx followed by blr: N if rS is the saved return address plus N.
+
+    Gecko codes (UCF's shield drop, for one) return to the caller's return address + 8 to skip
+    the caller's next instructions: `lwz rS, d(r1); ...; addi rS, rS, 8; mtlr rS; blr`, or the
+    same from `mflr rS`. The translated caller must then resume at that address, not after the call.
+    """
+    ins = insns[idx]
+    reg = ins.f["rs"]
+    if not any(j < len(insns) and insns[j] is not None and insns[j].op == "bclr" and not insns[j].lk
+               and insns[j].f["bo"] == 20 for j in range(idx + 1, idx + 4)):
+        return None
+    total = 0
+    for j in range(idx - 1, max(idx - 9, -1), -1):
+        prev = insns[j]
+        if prev is None:
+            return None
+        f = prev.f
+        if prev.op == "addi" and f["rd"] == reg and f["ra"] == reg:
+            total += f["simm"]
+        elif (prev.op == "lwz" and f["rd"] == reg and f["ra"] == 1) or (prev.op == "mfspr" and f["rd"] == reg and f["spr"] == 8):
+            return total if total and total % 4 == 0 and 0 < total <= 64 else None
+        elif prev.op in _WRITERS and f.get("rd") == reg or prev.op in ("b", "bc", "bclr", "bcctr"):
+            return None
+    return None
+
+
 def analyze_function(dol, symbols, func, hooks=None, body=None, optional_text=None):
     """`hooks`: {hook addr: Hook} (Gecko C2 caves spliced in place of the hooked instruction).
     `body`: optional explicit (addr, word) sequence for synthetic functions (caves).
@@ -268,6 +297,10 @@ def analyze_function(dol, symbols, func, hooks=None, body=None, optional_text=No
                     info.unresolved_bctr.append(ins.addr)
         elif ins.op == "bclr" and ins.lk:
             info.has_blrl = True
+        elif ins.op == "mtspr" and ins.f["spr"] == 8:
+            adjust = _return_adjust(info.insns, idx)
+            if adjust:
+                info.return_adjusts.add(adjust)
     return info
 
 
@@ -398,4 +431,21 @@ def analyze_all(dol, symbols, gecko=None):
                 info.entries.add(t)
                 info.labels.add(t)
                 thunks[t] = owner
+    # Callers of functions that can return past their call site resume at that address.
+    for info in infos.values():
+        for idx, ins in enumerate(info.insns):
+            if ins is None or not ins.lk:
+                continue
+            if ins.op in ("b", "bc"):
+                target = ins.branch_target
+            elif ins.op == "bcctr":
+                target = info.ctr_calls.get(ins.addr)
+            else:
+                continue
+            callee = infos.get(target)
+            if callee is None or not callee.return_adjusts or (ins.addr + 4) in info.local_returns:
+                continue
+            ret = ins.addr + 4
+            info.adjusted_returns[ret] = sorted(ret + n for n in callee.return_adjusts)
+            info.labels.update(a for a in info.adjusted_returns[ret] if a in info.addr_set)
     return infos, extra_entries, thunks

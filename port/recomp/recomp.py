@@ -39,7 +39,7 @@ ABSORBED_HOOKS = {
 
 
 def validate_absorbed_hooks(hooks, symbols, hle_funcs,
-                            registrations=ABSORBED_HOOKS):
+                            registrations=ABSORBED_HOOKS, require_all=True):
     validated = set()
     for hook in hooks:
         owner = symbols.containing(hook.hook)
@@ -65,7 +65,8 @@ def validate_absorbed_hooks(hooks, symbols, hle_funcs,
         hook.absorbed_by = owner.name
         validated.add(hook.hook)
     missing = sorted(set(registrations) - validated)
-    if missing:
+    # The registrations describe the online code set; other sets (playback) need not carry them.
+    if missing and require_all:
         raise ValueError(
             "registered absorbed Gecko hook(s) absent or not HLE-owned: %s" %
             ", ".join("%08X" % address for address in missing)
@@ -242,7 +243,8 @@ def main():
     hle_funcs = {n for n in hle if n in symbols.by_name}
     if gs is not None:
         try:
-            validate_absorbed_hooks(gs.hooks, symbols, hle_funcs)
+            validate_absorbed_hooks(gs.hooks, symbols, hle_funcs,
+                                    require_all=Path(args.sys_dir).resolve() == Path(SLIPPI_SYS).resolve())
         except ValueError as error:
             ap.error(str(error))
     infos, extra, thunks = analyze_all(dol, symbols, gs)

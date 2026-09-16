@@ -7,6 +7,7 @@ namespace host {
 struct HeadlessOptions {
   Options runtime;
   std::string script;
+  std::string replay;             // playback build: re-simulate this .slp from its recorded inputs
   bool allow_interpreter = false;
   bool validate_only = false;
   bool expect_scene = false;

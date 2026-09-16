@@ -75,7 +75,9 @@ inline void append_u32(std::vector<uint8_t>& q, uint32_t v) { q.push_back((uint8
 inline uint32_t be32(const uint8_t* p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
 
 void observe_recording_event(const uint8_t* data, size_t size) {
+#if !defined(MELEE_PORT_OFFLINE) || !MELEE_PORT_OFFLINE   // the offline executables have no Discord presence
   slippi::discord::on_replay_event(data, size);   // stage, characters, live stocks, set score
+#endif
   const uint8_t transition = g_recording_events.observe(data, size);
   if (transition & RecordingEvents::Commands) host::log("accept: slippi event=commands frame=na");
   if (transition & RecordingEvents::GameStart) host::log("accept: slippi event=game_start frame=na");

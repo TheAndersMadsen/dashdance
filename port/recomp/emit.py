@@ -75,6 +75,7 @@ class Emitter:
 
     # ------------------------------------------------------------------
     def emit_function(self, info):
+        self.cur_info = info
         func = info.func
         out = []
         name = self.func_names[func.addr]
@@ -454,8 +455,16 @@ class Emitter:
 
     def _call(self, target, ret):
         if target in self.func_names and target in self.infos:
-            return "c.lr = %s; %s(c, m);" % (hexs(ret), self.fname(target))
-        return "c.lr = %s; ppc::call(c, m, %s);" % (hexs(ret), hexs(target))
+            call = "c.lr = %s; %s(c, m);" % (hexs(ret), self.fname(target))
+        else:
+            call = "c.lr = %s; ppc::call(c, m, %s);" % (hexs(ret), hexs(target))
+        # The callee may return past the call site (see analyze._return_adjust): resume there.
+        for resume in self.cur_info.adjusted_returns.get(ret, ()):
+            if resume in self.cur_info.addr_set:
+                call += " if (c.lr == %s) goto L_%08X;" % (hexs(resume), resume)
+            else:
+                call += " if (c.lr == %s) ppc::fatal(c, \"adjusted return outside the caller\", c.lr);" % hexs(resume)
+        return call
 
     def _tail(self, target):
         if target in self.func_names and target in self.infos:

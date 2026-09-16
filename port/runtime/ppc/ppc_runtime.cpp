@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <limits>
 #include <mutex>
 #include <thread>
@@ -206,6 +207,9 @@ void trace_enter(Context& c, uint32_t pc) {
 
 // Hang diagnostics run on the simulation thread through hang_check.
 void hang_check(Context& c) {
+  // MELEE_TEST_FATAL_RETRACE=N: raise a guest fault once retrace N is reached, to exercise the crash diagnostics.
+  static const long test_fatal = [] { const char* v = std::getenv("MELEE_TEST_FATAL_RETRACE"); return v ? std::atol(v) : 0L; }();
+  if (test_fatal > 0 && host::retrace_count() >= (uint32_t)test_fatal) fatal(c, "test fault (MELEE_TEST_FATAL_RETRACE)", host::retrace_count());
   // No retrace for `hang_watch` seconds while the guest keeps calling functions: report where.
   static uint32_t last_retraces = 0;
   static double stuck_since = 0.0;
@@ -251,6 +255,48 @@ void longjmp_restore(Context& c, uint8_t* m, uint32_t buf, uint32_t val) {
   c.r[3] = val ? val : 1u;
 }
 
+namespace {
+// Guest call stack from the PowerPC back chain: [sp] is the caller's sp, [caller sp + 4] the LR saved into
+// it. Runs of one repeated return address (deep recursion) print once with a count.
+void log_guest_backtrace(Context& c, uint8_t* m) {
+  host::log("guest call stack (innermost first):");
+  uint32_t sp = c.r[1], prev_lr = 0, repeats = 0, shown = 0;
+  auto flush = [&] { if (repeats > 1) host::log("    ... %u more times", repeats - 1); };
+  for (int depth = 0; depth < 25000 && sp && fast(m, sp) && fast(m, sp + 8); ++depth) {
+    uint32_t caller_sp = ld32(c, m, sp);
+    if (!caller_sp || caller_sp <= sp || !fast(m, caller_sp + 8)) break;
+    uint32_t lr = ld32(c, m, caller_sp + 4);
+    if (lr == prev_lr) { ++repeats; sp = caller_sp; continue; }
+    flush();
+    if (++shown > 64) { host::log("  ... (stack continues)"); repeats = 0; break; }
+    host::log("  %08X %s", lr, host::symbol_name(lr));
+    prev_lr = lr; repeats = 1; sp = caller_sp;
+  }
+  flush();
+}
+
+#if !defined(MELEE_PORT_OFFLINE) || !MELEE_PORT_OFFLINE
+// Guest RAM next to the session log (session-<stamp>.ram, 24 MB), newest three kept, so a crash can be
+// inspected after the fact (tools/mac/ramdiff.py, .agents/skills/fix-logs/crash.md).
+void write_crash_ram() {
+  namespace fs = std::filesystem;
+  if (host::options.log_file.empty() || !host::ram) return;
+  fs::path path = fs::path(host::options.log_file).replace_extension(".ram");
+  std::error_code ec;
+  std::vector<fs::path> old;
+  for (const auto& e : fs::directory_iterator(path.parent_path(), ec))
+    if (e.path().extension() == ".ram") old.push_back(e.path());
+  std::sort(old.begin(), old.end());
+  for (size_t i = 0; old.size() >= 3 && i + 2 < old.size(); ++i) fs::remove(old[i], ec);
+  if (FILE* f = std::fopen(path.string().c_str(), "wb")) {
+    std::fwrite(host::ram, 1, RAM_SIZE, f);
+    std::fclose(f);
+    host::log("guest RAM at the fault written to %s", path.string().c_str());
+  }
+}
+#endif
+}  // namespace
+
 [[noreturn]] void fatal(Context& c, const char* what, uint32_t a) {
   host::log("recent function entries (oldest first):");
   for (uint32_t i = 0; i < 64; ++i) {
@@ -258,6 +304,14 @@ void longjmp_restore(Context& c, uint8_t* m, uint32_t buf, uint32_t val) {
     if (pc) host::log("  %08X %s", pc, host::symbol_name(pc));
   }
   host::log("r3=%08X r4=%08X r5=%08X r6=%08X r12=%08X r31=%08X", c.r[3], c.r[4], c.r[5], c.r[6], c.r[12], c.r[31]);
+  for (int i = 0; i < 32; i += 8)
+    host::log("r%d-r%d: %08X %08X %08X %08X %08X %08X %08X %08X", i, i + 7, c.r[i], c.r[i + 1], c.r[i + 2], c.r[i + 3],
+              c.r[i + 4], c.r[i + 5], c.r[i + 6], c.r[i + 7]);
+  host::log("lr=%08X ctr=%08X last function %08X", c.lr, c.ctr, c.last_pc);
+  if (host::ram) log_guest_backtrace(c, host::ram);
+#if !defined(MELEE_PORT_OFFLINE) || !MELEE_PORT_OFFLINE
+  write_crash_ram();
+#endif
   host::die("guest fault: %s (%08X) in %s (%08X); lr=%08X r1=%08X", what, a,
             host::symbol_name(c.last_pc), c.last_pc, c.lr, c.r[1]);
 }

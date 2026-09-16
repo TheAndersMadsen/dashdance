@@ -11,8 +11,7 @@ A fix counts as confirmed once it has been played through again.
 
 | # | Found | What happens | Evidence | Notes |
 |---|---|---|---|---|
-| 1 | 2026-09-16 | Crash mid-match (SIGABRT from `ppc::fatal` inside recursive guest calls `f_80373078`/`f_8036F1F8`). Happened twice (09:36, 10:44). | `~/Library/Logs/DiagnosticReports/Dashdance-2026-09-16-093630.ips`, `-104424.ips` | Same class as Hero88go/melee-unlocked#5. The fatal reason string was never logged (fix 4); the next occurrence will have it in `Logs/`. Also: `host::die` calls `exit()`, and a static destructor then hits `std::terminate`, so a clean fatal exit becomes an abort. |
-| 2 | 2026-09-16 | Desync in unranked, Sheik (us) vs Marth on Pokémon Stadium, about 63 s in. Checksums agreed through online frame 3908, then mismatched from 3915 on; the game ended as a no contest (end 7) at replay frame 3796. No rollbacks in the preceding ~90 frames. | `Logs/session-20260916-120928.log` lines 2117+, `Replays/Game_20260916T121422.slp` | **Confirmed: real Melee drops through the platform, Dashdance spot-dodges.** Remote Marth (port 1) dash-dances on the side platform (y=25) and shields at 3789 (GuardOn in both). Slippi Dolphin re-simulating the recorded inputs (`tools/mac/slippi_frames.py <replay> 3780 3800`, resync off) puts Marth in Pass (platform drop, action state 244) at **3791**, falling to y=24.42, 23.75 … 20.22 by 3796; the frames show him sinking through the platform. Dashdance keeps GuardOn at 3791 and spot-dodges (EscapeN, 235) at 3792 on y=25. So the first divergent frame is 3791, and Dashdance misses a shield drop that real Melee accepts. Stick y over 3789-3792 was -0.39, -0.60, -0.74, -0.96. Suspects: the translated shield-drop / UCF stick comparison (float edge case), or how remote stick bytes reach the pad buffers. Next: feed the .slp inputs into a headless run and compare Marth's state at 3791. |
+| 1 | 2026-09-16 | Crash mid-match (SIGABRT from `ppc::fatal` inside recursive guest calls `f_80373078`/`f_8036F1F8`). Three times: 09:36, 10:44, 14:23. | `~/Library/Logs/DiagnosticReports/Dashdance-2026-09-16-093630.ips`, `-104424.ips`, `Logs/session-20260916-140128.log` line 7927, `Replays/Game_20260916T142306.slp` | Same class as Hero88go/melee-unlocked#5. The 14:23 log has the reason: `guest call depth exceeded` in `HSD_JObjSetupMatrixSub` ↔ `HSD_JObjMakeMatrix`, with r3 = r31 = 80D15420 on every level. So a JObj is its own parent, and the parent-matrix recursion never ends. It hit an aerial landing collision on Dream Land (`ftCo_AttackAir_Coll` → `mpColl_LoadECB_JObj`), online frame ~2220, with 111 rollbacks earlier and none in the last 400 frames. The replay matches Slippi Dolphin up to its last frame, 2097, and headless Dashdance runs it clean with no self-parented JObj, so the corruption is in the unfinalized final frames or live-only (rollback suspected). Now logged for next time: full guest call stack, all registers, `session-<stamp>.ram` guest RAM, and one line per rollback. Next: `tools/mac/crashram.py` on that RAM at r3. Also: `host::die` calls `exit()`, and a static destructor then hits `std::terminate`, so a clean fatal exit becomes an abort. |
 
 ## Fixed
 
@@ -23,7 +22,26 @@ A fix counts as confirmed once it has been played through again.
 | 3 | HUD showed any adapter rate below 900 Hz as "125 Hz" (the Mayflash overclocks to ~540 Hz). | Show the measured rate. | see git log |
 | 6 | No way to see ping during a match (it was only written to the log every 10 s). | HUD shows "ping N ms" while connected to an online opponent. Not yet seen in a live match. | see git log |
 | 5 | Launcher crashed on open (`+[NSTextField wrappingLabelWithString:]` assertion in `refreshGames`, 2026-09-16 10:46). `ns()` used `stringWithUTF8String`, which returns nil for invalid UTF-8, and replay names are Shift-JIS on console. | `ns()` falls back to Shift-JIS, then Latin-1. Launcher stayed up after the fix; the original crash was not reproduced on demand, so the cause is inferred from the stack. | see git log |
+| 7 | Desync against Dolphin players whenever the UCF 0.84 shield drop fired (seen twice on 2026-09-16: `Game_20260916T121422` frame 3791, Marth spot-dodged instead of dropping through Stadium's platform; `Game_20260916T131538` frame 1058, a shield out of landing lag came a frame late, then the drop was missed). The UCF code returns to its caller's return address + 8 (`lwz r7,28(r1); addi r7,r7,8; mtlr r7; blr`) to skip the caller's `li r3,1`, so the spot-dodge check reports "no input" and the next check (shield or drop) runs. The recompiler turns every `blr` into a C++ `return`, so the caller always resumed right after the call: the check reported "handled" with no state change, and the fighter lost that frame's input. | `analyze.py` recognises returns to the return address + N and the emitter resumes the caller there (`if (c.lr == ret+N) goto`). Headless re-simulations of both replays now match Slippi Dolphin on every player-frame (7840 and 2372), and a Slippi Dolphin replay from 2025-10-12 still matches its recording (16916). Not yet confirmed in a live match. | see git log |
 | 4 | No session logs at all: the first `host::log` ran before `main_mac` set the log path, so the file opened relative to cwd (`/` from Finder), failed, and was never retried. Crashes left no trace. | Buffer lines until the path is set; one timestamped log per launch in `~/Library/Application Support/Dashdance/Logs/`, newest 50 kept, `latest.log` symlink. | see git log |
+
+## Investigating a desync
+
+`tools/mac/desync.py <replay.slp>` does the whole loop and writes `reports/desync/<replay>/report.md`:
+
+1. Slippi Dolphin re-simulates the replay from its recorded inputs (`slippi_frames.py`, a patched copy of the
+   Launcher's playback Dolphin, resync off). Every pre-frame and post-frame field is diffed against Dashdance's
+   recording: first divergent frame, fields, and the inputs leading up to it. The online frame is replay frame + 124.
+2. Dashdance re-simulates the same replay headless (`dashdance_resim.py`, the playback code set translated into
+   `build/mac-playback*`). Reproducing its own recording means a deterministic bug in the translated game or HLE;
+   matching Slippi means an online-only path (or a bug already fixed).
+3. Guest RAM entering the divergent frame, from both (`slippi_ram.py` attaches lldb to Dolphin;
+   `MELEE_RAM_DUMP_FRAMES` in the playback build), compared by `ramdiff.py`: fighters by decomp field name, bone
+   animation, player blocks, pointers normalised. Identical state means the bug is in code run during that frame.
+4. Slippi's frames around the divergence as PNGs.
+
+For fix 7 the state entering the frame was identical and the inputs identical, which pointed at control flow in
+that frame; reading the translated `ftCo_80099794` next to the UCF cave found the return-address trick.
 
 ## Setup notes that are not code
 
