@@ -50,7 +50,7 @@ void usage() {
       "melee_port_mac --iso <Melee NTSC 1.02 image> [options]\n"
       "  --choose-disc            always show the disc picker\n"
       "  --volume 0-100           output volume (default 70)\n"
-      "  --window WxH             initial window size (default 1280x960)\n"
+      "  --window WxH             initial window size (default follows the picture: 1280x960, 1280x720 with --widescreen)\n"
       "  --no-vsync               present without vertical sync\n"
       "  --fullscreen             start in full screen (macOS: direct-to-display presentation)\n"
       "  --scale N|auto           internal resolution multiplier (default auto)\n"
@@ -155,7 +155,7 @@ int main(int argc, char** argv) {
   bool offline = false, choose_disc = false, fullscreen_arg = false, delay_arg = false;
   bool hidden = false;
   float overlay_opacity_arg = -1.0f, sharpness_arg = -1.0f;
-  bool widescreen_arg = false;
+  bool widescreen_arg = false, window_arg = false;
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     auto next = [&]() -> const char* { if (i + 1 >= argc) { usage(); std::exit(2); } return argv[++i]; };
@@ -164,7 +164,7 @@ int main(int argc, char** argv) {
     else if (a == "--iso") iso_arg = next();
     else if (a == "--choose-disc") choose_disc = true;
     else if (a == "--volume") { volume = std::atoi(next()); volume_arg = true; }
-    else if (a == "--window") { if (std::sscanf(next(), "%ux%u", &window_w, &window_h) != 2 || window_w < 320 || window_h < 240) { usage(); return 2; } }
+    else if (a == "--window") { window_arg = true; if (std::sscanf(next(), "%ux%u", &window_w, &window_h) != 2 || window_w < 320 || window_h < 240) { usage(); return 2; } }
     else if (a == "--no-vsync") gfx.vsync = false;
     else if (a == "--fullscreen") fullscreen_arg = true;
     else if (a == "--scale") { std::string v = next(); gfx.efb_scale = v == "auto" ? 0 : std::atoi(v.c_str()); if (v != "auto" && gfx.efb_scale < 1) { usage(); return 2; } }
@@ -286,6 +286,9 @@ int main(int argc, char** argv) {
   // Command-line flags win over remembered launcher values.
   host::touch_set_opacity(overlay_opacity_arg >= 0.0f ? overlay_opacity_arg : settings.overlay_opacity);
   gfx.widescreen = widescreen_arg || settings.widescreen;
+  // The window defaults to the picture's shape: at 16:9 the 1280x960 default window would
+  // letterbox the widescreen picture top and bottom, which is what widescreen removes.
+  if (!window_arg && gfx.widescreen) { window_w = 1280; window_h = 720; }
   gfx.sharpness = sharpness_arg >= 0.0f ? sharpness_arg : settings.sharpness;
   if (show_launcher) { gfx.efb_scale = settings.scale; gfx.anisotropy = settings.anisotropy; gfx.vsync = settings.vsync; if (!volume_arg) volume = settings.volume; }
   if (!delay_arg) online.delay = std::clamp(settings.online_delay, 1, 9);   // the player's choice; each frame of delay adds 16.7 ms
