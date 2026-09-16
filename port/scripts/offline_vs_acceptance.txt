@@ -1,36 +1,42 @@
 # Deterministic offline acceptance path on an isolated empty card.
 #
-# The absolute navigation is the exact upstream-proven vs_match sequence:
-# Slippi boot menu -> back out twice -> VS Mode -> Melee -> two human ports
-# choose characters -> Battlefield.  Do not retime it without scene telemetry.
-300 B
-310
-380 B
-390
-460 sy=-127
-466
-500 A
-510
-580 A
-590
-700 p=2
-1000 sx=61 sy=127
-1000 p=2 sy=127
-1017
-1017 p=2
-1040 A
-1040 p=2 A
-1050
-1050 p=2
-1100 START
-1110
-1300 sy=100
-1305
-1330 A
-1340
+# Scene-gated navigation: each block is keyed on the guest state-machine bytes
+# (mode/state at 0x80479D30+0x33; see docs/OFFLINE_GAMEPLAY_ACCEPTANCE.md), and
+# its frame numbers count from the first retrace the gate matches. This is
+# immune to boot-length variance.
+#
+# The Slippi log-in menu (the main-menu scene reached after answering the
+# fresh-card prompt) currently ignores scripted input, so automation runs set
+# MELEE_FORCE_SCENE=0x0200: when the guest reaches the main menu, the runtime
+# fast-forwards the state machine to the VS character select (the "boot to
+# CSS" Gecko-code trick). The scene-gated blocks then drive the CSS, the
+# stage select, and the match inputs.
+#
+# Boot scene: answer the memory-card prompt (A = Yes, creates game data).
+@scene 0x28 0x00
+440 A
+470
+540 A
+570
+640 A
+670
+
+# VS character select: clear the offline-services notice, both ports pick the
+# highlighted characters, then START.
+@scene 0x02 0x00
+100 Z
+200 A
+220 p=2 A
+330 START
+340
+
+# Stage select: hover Battlefield, select, and the match begins.
+@scene 0x02 0x01
+60 sy=100
+90 A
 
 # The offline replay recorder starts this section once its first post-frame 1
-# event arrives.  This proves scripted input continues in the actual match;
+# event arrives. This proves scripted input continues in the actual match;
 # these inputs are not used as evidence that the match was reached.
 @match
 @loop 240

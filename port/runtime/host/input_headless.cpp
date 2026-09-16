@@ -21,7 +21,8 @@ bool input_load_script(const char* path) {
 }
 void input_mark_match_start() { match_start.store(retrace_count()); }
 void input_poll(PadState out[4]) {
-  auto pads = script.sample(retrace_count(), match_start.load());
+  auto pads = script.sample(retrace_count(), match_start.load(),
+                            rd8(0x80479D30), rd8(0x80479D33));
   for (unsigned port = 0; port < pads.size(); ++port) {
     out[port] = {};
     out[port].err = pads[port].connected ? 0 : -1;

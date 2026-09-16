@@ -117,3 +117,33 @@ moves, A, START) leave the menu untouched while the same input pipeline exits
 the boot scene correctly. Interactive (physical) input on the same menus works.
 Until this is resolved, run the acceptance path interactively or investigate
 the pad-injection path used once the Slippi main menu scene is active.
+
+## Scene-gated script blocks (2026-09-16)
+
+`@scene MODE STATE` blocks were added to the input script format: entries in a
+block are keyed on the guest state-machine bytes (0x80479D30/33) instead of
+absolute retraces, with frame numbers counted from the first retrace the gate
+matches. This makes menu navigation immune to boot-length variance (the
+fresh-card "Create Game Data?" flow used to swallow time-keyed entries).
+`@match` entries remain match-relative and ungated; while a gate is active,
+ungated time-keyed entries are suspended. The runtime PADRead injection now
+passes the guest scene bytes to the script sampler on all three front ends.
+
+A second diagnostic, `MELEE_FAKE_LOGIN=1`, makes the offline 0xB9 handler
+report a logged-in state (name "PLAYER", code "#0001") so the Slippi main menu
+unlocks without online services. Combined with `--hidden` and frame captures,
+these tools exposed the full menu flow headlessly: boot card dialog → Slippi
+main menu → Online Play (Ranked/Unranked/Direct/Teams/Party) → the online
+character select renders and navigates correctly.
+
+## Current blocker: memory-card save-completion notice
+
+With online services enabled, the scripted flow answers "Yes" on the fresh-card
+prompt; the game creates the card file correctly (90,176-byte .gci written) and
+shows the "Game Data has been created" notice with a progress bar — but the
+notice does not auto-dismiss (observed for 3,400+ frames). The save-completion
+callback or timer the notice waits on is not being delivered by the card HLE.
+Until it is, the offline VS acceptance (which needs the classic main menu,
+reachable only after this notice) cannot complete headlessly. The card HLE
+(`port/runtime/hle/hle_card.cpp`) should be checked for the
+save-completion/interrupt delivery path against the SIRC/CARD timeline.

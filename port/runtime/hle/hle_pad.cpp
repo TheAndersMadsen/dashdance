@@ -30,6 +30,26 @@ HLE(PADSetSamplingRate) {}
 // u32 PADRead(PADStatus* status[4]) -> bitmask of channels with fresh data
 HLE(PADRead) {
   host::pump_completions();
+#if defined(MELEE_PORT_OFFLINE)
+  // MELEE_FORCE_SCENE=0xMMSS: automation hook. When the guest reaches the
+  // main-menu scene (0x01), rewrite the state-machine bytes to jump straight
+  // to the requested scene — the same trick as a "boot to CSS" Gecko code —
+  // so offline acceptance runs do not depend on navigating the Slippi
+  // log-in menu. Scene-gated script blocks handle everything after.
+  static const uint16_t force_scene = [] {
+    if (const char* v = std::getenv("MELEE_FORCE_SCENE")) {
+      return static_cast<uint16_t>(std::strtoul(v, nullptr, 16));
+    }
+    return static_cast<uint16_t>(0);
+  }();
+  if (force_scene && host::rd8(0x80479D30) == 0x01) {
+    host::wr8(0x80479D30, static_cast<uint8_t>(force_scene & 0xFF));
+    host::wr8(0x80479D33, static_cast<uint8_t>(force_scene >> 8));
+    if (static_cast<bool>(std::getenv("MELEE_PAD_TRACE"))) {
+      host::log("[padtrace] forced scene to 0x%04X", force_scene);
+    }
+  }
+#endif
   static int reported = 0;
   if (host::options.trace_calls && reported++ < 10) host::log("[pad] PADRead(%08X)", ARG0);
 #if defined(MELEE_PORT_OFFLINE) || defined(TARGET_PC)

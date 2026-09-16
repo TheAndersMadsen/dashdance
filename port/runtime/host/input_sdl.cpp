@@ -132,7 +132,8 @@ void input_poll(PadState out[4]) {
   for (int i = 0; i < 4; ++i) { out[i] = {}; out[i].err = -1; }
   if (pad_file(out)) return;
   if (g_scripted) {
-    auto pads = g_script.sample(retrace_count(), g_match_start.load());
+    auto pads = g_script.sample(retrace_count(), g_match_start.load(),
+                                rd8(0x80479D30), rd8(0x80479D33));
     for (unsigned port = 0; port < pads.size(); ++port) {
       out[port].err = pads[port].connected ? 0 : -1;
       out[port].button = pads[port].buttons;
