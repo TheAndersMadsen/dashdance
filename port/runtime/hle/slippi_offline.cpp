@@ -5,6 +5,7 @@
 #include "slippi_offline.h"
 #include <algorithm>
 #include <random>
+#include <cstdlib>
 
 namespace slippi::online::offline {
 namespace {
@@ -40,9 +41,21 @@ bool handle(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, std::vect
       std::copy(error, error + sizeof(error) - 1, q.begin() + 357);
       return true;
     }
-    case 0xB9: // GET_ONLINE_STATUS: logged out, empty 31-byte name and 10-byte code
+    case 0xB9: { // GET_ONLINE_STATUS: logged out, empty 31-byte name and 10-byte code
       q.assign(42, 0);
+      // MELEE_FAKE_LOGIN=1: diagnostic only. Report a logged-in state so the
+      // Slippi main menu enables navigation without online services; never
+      // set this in normal offline play.
+      static const int fake_login = std::getenv("MELEE_FAKE_LOGIN") ? std::atoi(std::getenv("MELEE_FAKE_LOGIN")) : 0;
+      if (fake_login) {
+        q[0] = static_cast<uint8_t>(fake_login);
+        const char name[] = "PLAYER";
+        std::copy_n(name, sizeof(name) - 1, q.begin() + 1);
+        const char code[] = "#0001";
+        std::copy_n(code, sizeof(code) - 1, q.begin() + 32);
+      }
       return true;
+    }
     case 0xBC: // GET_NEW_SEED is a local operation, including offline play
       q.clear();
       append_u32(q, g_rng() % 0xFFFFFFFFu);

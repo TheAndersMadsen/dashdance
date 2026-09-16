@@ -144,7 +144,6 @@ std::array<ScriptPad, 4> InputScript::sample(uint32_t retrace, uint32_t match_st
 
   for (unsigned port = 0; port < result.size(); ++port) {
     if (!(ports_ & (1u << port))) continue;
-    bool connected = false;
     for (const Entry& entry : entries_) {
       if (entry.port != port) continue;
       bool applies;
@@ -158,12 +157,11 @@ std::array<ScriptPad, 4> InputScript::sample(uint32_t retrace, uint32_t match_st
         const SceneGate& gate = gates_[entry.scene_group];
         applies = !in_match && active == &gate && entry.frame <= gate_relative;
       }
-      if (applies) {
-        result[port] = entry.pad;
-        connected = true;
-      }
+      if (applies) result[port] = entry.pad;
     }
-    result[port].connected = connected;
+    // Last so the entry assignment cannot clear it: a scripted port is
+    // connected from boot, matching the Win32 sampler.
+    result[port].connected = true;
   }
   return result;
 }
