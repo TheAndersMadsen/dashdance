@@ -37,3 +37,6 @@ NOTE_FOR_*.md
 
 # Local dependencies fetched by setup.sh (doldecomp checkout, the DOL extracted from your own disc): never committed.
 deps/
+
+dist/
+port/scripts/*.ungated
