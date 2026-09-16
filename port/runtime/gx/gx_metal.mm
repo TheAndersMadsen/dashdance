@@ -1034,17 +1034,38 @@ class MetalBackend final : public Backend {
           execute_draw(frame, frame.draws[cmd.index], overrides ? overrides + cmd.index : nullptr);
         } else {
           const EfbCopy& c = frame.copies[cmd.index];
-          if (c.to_xfb) { if (!skip_present_ && present_efb(c)) presented = true; }
+          if (c.to_xfb) {
+            if (!skip_present_ && present_efb(c)) presented = true;
+            // Snapshot the presented EFB before the game's clear erases it:
+            // encoding this after the loop reads the cleared EFB (all-black
+            // captures). The blit joins this frame's command buffer, so it
+            // cannot race the draws. In drain mode (hidden window) the frame
+            // number keys on executed frames, which still tick one per retrace.
+            if (!opts_.capture_path.empty() && !capture_staging_) {
+              const uint64_t n = frame_counter_ + 1;   // executed frames: deterministic and 1:1 with retraces
+              const bool wanted = (opts_.capture_frame && n == opts_.capture_frame) || (opts_.capture_every && n % opts_.capture_every == 0);
+              const uint32_t x = std::min<uint32_t>(c.src_x * scale_, efb_w_), y = std::min<uint32_t>(c.src_y * scale_, efb_h_);
+              const uint32_t w = std::min<uint32_t>(c.src_w * scale_, efb_w_ - x), h = std::min<uint32_t>(c.src_h * scale_, efb_h_ - y);
+              if (wanted && w && h && command_) {
+                  end_pass();   // a lazily-opened draw pass must close first (drain mode never presents)
+                MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:w height:h mipmapped:NO];
+                td.storageMode = MTLStorageModeShared;
+                capture_staging_ = [device_ newTextureWithDescriptor:td];
+                capture_path_pending_ = opts_.capture_path;
+                capture_x_ = x; capture_y_ = y; capture_w_ = w; capture_h_ = h;
+                capture_cmd_ = command_;
+                id<MTLBlitCommandEncoder> blit = [command_ blitCommandEncoder];
+                [blit copyFromTexture:efb_color_ sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(x, y, 0) sourceSize:MTLSizeMake(w, h, 1)
+                            toTexture:capture_staging_ destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+                [blit endEncoding];
+              }
+            }
+          }
           else execute_copy(c);
           if (c.clear) clear_efb(c);
         }
       }
       end_pass();
-      if (presented && !opts_.capture_path.empty()) {
-        const uint64_t n = frames_presented_ + 1;
-        const bool wanted = (opts_.capture_frame && n == opts_.capture_frame) || (opts_.capture_every && n % opts_.capture_every == 0);
-        if (wanted) pending_capture_ = true;
-      }
       if (drawable_) {
         [command_ presentDrawable:drawable_];
         // Latency accounting: XFB copy on the simulation thread -> pixels on the panel. The
@@ -1070,16 +1091,23 @@ class MetalBackend final : public Backend {
         self_gpu->gpu_note((cb.GPUEndTime - cb.GPUStartTime) * 1000.0, (cb.GPUStartTime - cb.kernelStartTime) * 1000.0);
       }];
       [command_ commit];
-      if (pending_capture_) {
+      if (capture_staging_) {
         [command_ waitUntilCompleted];
-        pending_capture_ = false;
-        std::string path = opts_.capture_path;
+        [capture_cmd_ waitUntilCompleted];
+        std::string path = capture_path_pending_;
         if (opts_.capture_every) {
           char suffix[32]; std::snprintf(suffix, sizeof suffix, "_%05llu.ppm", (unsigned long long)(frames_presented_ + 1));
           const bool ppm = path.size() > 4 && path.compare(path.size() - 4, 4, ".ppm") == 0;
           path = path.substr(0, ppm ? path.size() - 4 : path.size()) + suffix;
         }
-        capture(last_present_, path);
+        std::vector<uint8_t> pixels((size_t)capture_w_ * capture_h_ * 4);
+        [capture_staging_ getBytes:pixels.data() bytesPerRow:capture_w_ * 4 fromRegion:MTLRegionMake2D(0, 0, capture_w_, capture_h_) mipmapLevel:0];
+        std::ofstream f(path, std::ios::binary);
+        f << "P6\n" << capture_w_ << ' ' << capture_h_ << "\n255\n";
+        for (size_t i = 0; i < (size_t)capture_w_ * capture_h_; ++i) f.write((const char*)&pixels[i * 4], 3);
+        host::log("captured %s (%ux%u)", path.c_str(), capture_w_, capture_h_);
+        capture_staging_ = nil;
+        capture_cmd_ = nil;
       }
       command_ = nil; drawable_ = nil;
       if (compiles_ || psos_) {
@@ -1179,6 +1207,12 @@ class MetalBackend final : public Backend {
   id<MTLDepthStencilState> bound_depth_ = nil;
   int bound_cull_ = -1;
   EfbCopy last_present_{};
+  // Capture staging: the EFB is cleared after its XFB copy, so the blit is
+  // encoded inside the frame (before the clear) and read back after commit.
+  id<MTLTexture> capture_staging_ = nil;
+  id<MTLCommandBuffer> capture_cmd_ = nil;
+  std::string capture_path_pending_;
+  uint32_t capture_x_ = 0, capture_y_ = 0, capture_w_ = 0, capture_h_ = 0;
   std::unordered_map<PsoKey, id<MTLRenderPipelineState>, PsoKeyHash> pipelines_;
   std::unordered_map<uint64_t, id<MTLFunction>> vs_functions_, ps_functions_;
   std::unordered_map<uint32_t, id<MTLDepthStencilState>> depth_states_;

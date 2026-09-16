@@ -61,6 +61,7 @@ void usage() {
       "  --anisotropy 1..16       anisotropic filtering (default 16)\n"
       "  --capture FILE.ppm       write the presented frame N (--capture-frame N)\n"
       "  --offline                disable Slippi Online services\n"
+      "  --hidden                 run without showing the window (automation, screenshots)\n"
       "  --user-dir DIR           Slippi folder holding user.json (default: this app's sign-in, else the Slippi Launcher's)\n"
       "  --online-delay N         Slippi Online input delay frames (default 2)\n"
       "  --chat on|direct|off     in-game chat availability\n"
@@ -152,6 +153,7 @@ int main(int argc, char** argv) {
   gx::MetalOptions gfx;
   std::string script, iso_arg, user_dir, sys_dir, replay_dir, card_dir, profile_dir, cache_dir, log_file;
   bool offline = false, choose_disc = false, fullscreen_arg = false, delay_arg = false;
+  bool hidden = false;
   float overlay_opacity_arg = -1.0f, sharpness_arg = -1.0f;
   bool widescreen_arg = false;
   for (int i = 1; i < argc; ++i) {
@@ -175,6 +177,7 @@ int main(int argc, char** argv) {
     else if (a == "--capture-frame") gfx.capture_frame = (uint32_t)std::strtoul(next(), nullptr, 0);
     else if (a == "--capture-every") gfx.capture_every = (uint32_t)std::strtoul(next(), nullptr, 0);
     else if (a == "--offline") offline = true;
+    else if (a == "--hidden") hidden = true;
     else if (a == "--user-dir") user_dir = next();
     else if (a == "--online-delay") { online.delay = std::clamp(std::atoi(next()), 1, 9); delay_arg = true; }
     else if (a == "--chat") { std::string v = next(); online.chat = v == "off" ? 2 : v == "direct" ? 1 : 0; }
@@ -341,7 +344,7 @@ int main(int argc, char** argv) {
   bool audio_opened = false;
   int code = 0;
   try {
-    void* layer = host::window_create((int)window_w, (int)window_h, L"Dashdance", true);
+    void* layer = host::window_create((int)window_w, (int)window_h, L"Dashdance", !hidden);
     int client_w = 0, client_h = 0;
     host::window_client_size(&client_w, &client_h);
     gfx.cache_dir = cache_dir;

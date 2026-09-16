@@ -98,3 +98,22 @@ both verified boot and the GCT load, but neither recorded scene bytes.  The
 2400 run created a card and loaded additional assets, yet reported 0 replays
 and never emitted a `0x35` recording command.  Neither log establishes CSS,
 SSS, or gameplay regardless of its frame/GX totals.
+
+## macOS notes (2026-09-16)
+
+The headless binary now builds on macOS: `runtime_headless` links
+`discord_rpc.cpp` and `slippi_login.cpp` (plus the Foundation framework) that
+`exi_slippi.cpp` already references, and `--hidden` is accepted by
+`melee_port_mac` to run without showing a window. Frame captures were also
+fixed: they used to read the EFB after the game's next-frame clear had erased
+it (all-black images); the readback is now encoded into the presenting frame's
+command buffer before the clear, and works in drain mode with hidden windows.
+
+Known issue: the scripted navigation in `offline_vs_acceptance.txt` stops
+progressing on the Slippi main menu (mode `0x01`) on today's macOS builds.
+Scene telemetry shows the boot-scene dialog answered and the main menu reached
+(`0x28` → `0x01` at retrace 582 with a fresh card), but later entries (cursor
+moves, A, START) leave the menu untouched while the same input pipeline exits
+the boot scene correctly. Interactive (physical) input on the same menus works.
+Until this is resolved, run the acceptance path interactively or investigate
+the pad-injection path used once the Slippi main menu scene is active.

@@ -340,7 +340,8 @@ endfunction()
 
 if(MELEE_BUILD_PORT_HEADLESS)
   add_library(runtime_headless STATIC ${PORT_PORTABLE_RUNTIME_SOURCES}
-    runtime/host/input_headless.cpp runtime/host/window_headless.cpp runtime/host/audio_headless.cpp)
+    runtime/host/input_headless.cpp runtime/host/window_headless.cpp runtime/host/audio_headless.cpp
+    runtime/hle/discord_rpc.cpp runtime/hle/slippi_login.cpp runtime/hle/slippi_http_apple.mm)
   target_include_directories(runtime_headless PUBLIC runtime/ppc runtime/host runtime/hle runtime/gx
     "${PORT_GEN}" "${PROJECT_SOURCE_DIR}/native" third_party)
   target_compile_definitions(runtime_headless PUBLIC MELEE_PORT_OFFLINE=1)
@@ -349,6 +350,9 @@ if(MELEE_BUILD_PORT_HEADLESS)
     MELEE_PORT_INPUT_MANIFEST_PATH="${MELEE_PORT_INPUT_MANIFEST}"
     MELEE_PORT_INPUT_MANIFEST_SHA256="${MELEE_PORT_INPUT_MANIFEST_SHA256}")
   target_link_libraries(runtime_headless PUBLIC native_animation port_build_options Threads::Threads)
+  if(APPLE)
+    target_link_libraries(runtime_headless PRIVATE "-framework Foundation")
+  endif()
   add_dependencies(runtime_headless port_verify_generated)
   add_executable(melee_port_headless app/main_headless.cpp)
   # Repeat the runtime archive for ELF linkers: generated guest code calls HLE
