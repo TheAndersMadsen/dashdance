@@ -160,7 +160,7 @@ int main(int argc, char** argv) {
     else if (a == "--dump-frame") gfx.dump_frame = (uint32_t)std::strtoul(next(), nullptr, 0);
     else if (a == "--trace-calls") o.trace_calls = true;
     else if (a == "--quiet") o.quiet = true;
-    else if (a == "--time-base") o.time_base = std::strtoull(next(), nullptr, 0);
+    else if (a == "--time-base") { o.time_base = std::strtoull(next(), nullptr, 0); o.time_base_set = true; }
     else if (a == "--volume") o.volume = std::atoi(next());
     else if (a == "--widescreen") gfx.widescreen = true;
     else if (a == "--sharpness") gfx.sharpness = std::clamp((float)std::atof(next()), 0.0f, 1.0f);
