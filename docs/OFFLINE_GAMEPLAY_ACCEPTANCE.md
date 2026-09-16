@@ -147,3 +147,25 @@ Until it is, the offline VS acceptance (which needs the classic main menu,
 reachable only after this notice) cannot complete headlessly. The card HLE
 (`port/runtime/hle/hle_card.cpp`) should be checked for the
 save-completion/interrupt delivery path against the SIRC/CARD timeline.
+
+## Navigation progress with online services enabled (2026-09-16, later runs)
+
+With online services enabled (no `--offline`) and the memory-card dialog
+answered "Yes" (A), the scripted navigation progressed much further:
+boot → "Game Data has been created" save notice → main menu → Online Play menu
+(Ranked/Unranked/Direct/Teams/Party — capture-verified) — all driven by the
+scene-gated blocks. Two navigation facts learned:
+
+- The Slippi main menu deflections use the GameCube's 128-centered stick
+  convention: a script value of `sx=61` reads as ~half-left (61 < 128), while
+  negative script values wrap to near-center. Calibrate menu deflections
+  against captures, not intuition.
+- The save-notice screen lingers ~16+ seconds (auto-dismisses on its own; no
+  input needed).
+
+Remaining for the offline 02:02 acceptance: from the Online Play menu, press B
+to return to the menu root, navigate to the 1-P Mode page, enter VS Mode →
+Melee → the classic CSS (mode 02:00), pick two characters, START → SSS
+(02:01), select Battlefield → in-game (02:02). The scene-gate blocks make
+this sequence robust to scene-entry timing; only the hover/select inputs per
+page need calibration against captures.
