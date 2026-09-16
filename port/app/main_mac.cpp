@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -141,6 +142,25 @@ static void save_launcher_ini(const fs::path& path, const host::LauncherSettings
       << "\nonline_delay=" << settings.online_delay << "\ndiscord=" << (settings.discord_enabled ? 1 : 0) << "\ndiscord_rank=" << (settings.discord_show_rank ? 1 : 0) << "\n";
   for (const host::ControllerConfig& c : host::controller_configs()) out << "controller." << c.guid << "=" << c.port << "|" << c.map.serialize() << "\n";
   out << "keyboard=" << host::keyboard_map().serialize() << "\n";
+}
+
+// One log per launch, named by start time, so a crash or desync report survives the next launch.
+// Keeps the newest 50 and points Logs/latest.log at the current one.
+static std::string session_log_path(const fs::path& dir) {
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  std::vector<fs::path> old;
+  for (const auto& e : fs::directory_iterator(dir, ec))
+    if (e.path().filename().string().rfind("session-", 0) == 0) old.push_back(e.path());
+  std::sort(old.begin(), old.end());
+  for (size_t i = 0; old.size() >= 50 && i + 49 < old.size(); ++i) fs::remove(old[i], ec);
+  char stamp[32];
+  const std::time_t now = std::time(nullptr);
+  std::strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", std::localtime(&now));
+  const fs::path path = dir / (std::string("session-") + stamp + ".log");
+  fs::remove(dir / "latest.log", ec);
+  fs::create_symlink(path.filename(), dir / "latest.log", ec);
+  return path.string();
 }
 
 int main(int argc, char** argv) {
@@ -299,7 +319,7 @@ int main(int argc, char** argv) {
   if (card_dir.empty()) card_dir = (fs::path(profile_dir) / "GC/CardA").string();
   if (replay_dir.empty()) replay_dir = (support / "Replays").string();
   if (cache_dir.empty()) cache_dir = (support / "Cache").string();
-  if (log_file.empty()) log_file = (support / "melee_port.log").string();
+  if (log_file.empty()) log_file = session_log_path(support / "Logs");
   if (sys_dir.empty()) sys_dir = find_sys_dir();
   if (sys_dir.empty()) { std::fprintf(stderr, "cannot find the Slippi Sys folder; pass --sys-dir or set MELEE_SYS_DIR\n"); return 2; }
   for (const auto& [dir, what] : std::vector<std::pair<std::string, const char*>>{

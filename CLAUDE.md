@@ -5,6 +5,20 @@ Online, built by statically recompiling the game's PowerPC code to C++ and runni
 runtime with a Metal renderer. Read this file first; it tells you how the tree is laid out, how to
 build, and the rules that are not obvious from the code.
 
+## Fork workflow (Metroxe/dashdance, branch `christopher/mac-fixes`)
+
+This checkout is Christopher's playtest fork. He plays, things break, and fixes land here one commit at a
+time until they go upstream as one PR. This section is fork-only: drop it from the PR.
+
+- Remotes: `fork` is Metroxe/dashdance (push here), `origin` is TheAndersMadsen/dashdance (upstream; never push).
+- Work on `christopher/mac-fixes`. One fix per commit. Push to `fork` after each fix.
+- `/fix-logs` (`.agents/skills/fix-logs/`) reviews unreviewed session logs and crash reports and fixes what they show.
+- `docs/MAC_FIXES.md` is the issue and fix log. `docs/PR.md` is the running PR description: every fix adds one
+  plain bullet there in the same change. Keep it short.
+- Rebuild with `tools/mac/rebuild.sh`, never a bare cmake build (the input manifest must be regenerated after an edit).
+- Capture evidence by hand with `tools/mac/report.sh "what happened"`; list unreviewed logs with `tools/mac/unreviewed.sh`.
+- The disc path is in `.disc-path`; `deps/melee` must stay at the pinned decomp commit `05a1394f`.
+
 ## One-command setup
 
 Players use `install.sh` (the one line in the README): it clones into ~/Dashdance, asks for the disc, runs `setup.sh`, copies the app to

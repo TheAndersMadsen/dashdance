@@ -117,7 +117,13 @@ static const void* const kSliderFormatKey = &kSliderFormatKey;
 static const void* const kSliderScaleKey = &kSliderScaleKey;
 NSColor* kGreen() { return rgb(0.30, 0.85, 0.45); }
 NSColor* kRed() { return rgb(0.89, 0.27, 0.17); }
-NSString* ns(const std::string& s) { return [NSString stringWithUTF8String:s.c_str()]; }
+// stringWithUTF8String returns nil for invalid UTF-8 (replay names and tags are Shift-JIS on the console),
+// and a nil label string is an AppKit assertion that aborts the launcher. Fall back to Shift-JIS, then Latin-1.
+NSString* ns(const std::string& s) {
+  if (NSString* utf8 = [NSString stringWithUTF8String:s.c_str()]) return utf8;
+  if (NSString* sjis = [[NSString alloc] initWithBytes:s.data() length:s.size() encoding:NSShiftJISStringEncoding]) return sjis;
+  return [[NSString alloc] initWithBytes:s.data() length:s.size() encoding:NSISOLatin1StringEncoding] ?: @"";
+}
 NSImage* symbol(NSString* name, CGFloat size, NSFontWeight weight) {
   NSImage* image = [NSImage imageWithSystemSymbolName:name accessibilityDescription:nil];
   return [image imageWithSymbolConfiguration:[NSImageSymbolConfiguration configurationWithPointSize:size weight:weight]];

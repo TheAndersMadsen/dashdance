@@ -128,6 +128,9 @@ const char* thermal_state_name();
 // A short note for the performance HUD when the device adds latency the app cannot remove (Low Power Mode, Bluetooth
 // audio); empty when nothing applies.
 const char* latency_warning();
+// Round-trip time to the first remote player in an online match, from Slippi's pad acks; -1 when not connected.
+void set_online_ping_ms(int ms);
+int online_ping_ms();
 // iPhone, iPad, Vision Pro: logs the audio buffer and route the system actually granted (call after opening the device).
 void audio_session_report();
 // What in the player's setup costs latency right now, in plain words: display refresh, full screen (Mac), Low Power Mode,

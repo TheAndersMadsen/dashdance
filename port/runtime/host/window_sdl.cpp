@@ -430,6 +430,7 @@ void window_pump() {
       case SDL_EVENT_GAMEPAD_REMOVED: close_gamepad(event.gdevice.which); break;
       case SDL_EVENT_KEY_DOWN:
         if (event.key.key == SDLK_RETURN && (event.key.mod & SDL_KMOD_ALT) && !event.key.repeat) g_fullscreen_toggle.store(true);
+        if (event.key.key == SDLK_Q && (event.key.mod & SDL_KMOD_GUI) && !event.key.repeat) { g_closed.store(true); request_exit(0); }   // Cmd+Q in full screen
         if (!event.key.repeat) g_last_key_press.store((int)event.key.scancode);
         if ((event.key.key == SDLK_F1 || event.key.key == SDLK_ESCAPE) && !event.key.repeat && !menu_capturing()) menu_toggle();
         break;

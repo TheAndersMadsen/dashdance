@@ -202,6 +202,7 @@ void cleanup_connection() {
   g_overwrite_selections.clear();
   g_play_session_active = false;
   g_in_online_match = false;
+  host::set_online_ping_ms(-1);
   host::set_emulation_speed(1.0);
 }
 

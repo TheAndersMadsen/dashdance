@@ -7,7 +7,9 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <mutex>
+#include <string>
 
 namespace host {
 namespace {
@@ -16,10 +18,21 @@ FILE* log_file = nullptr;
 bool log_tried = false, log_closed = false;
 FatalObserver fatal_observer;
 std::atomic_flag observer_active = ATOMIC_FLAG_INIT;
+std::string pending;   // lines logged before the frontend has chosen a log path; written once the file opens
 void open_log_file() {
   if (log_tried || log_closed) return;
+  // Wait for a path: a frontend launched from Finder runs with cwd "/", where a relative "melee_port.log"
+  // cannot be created, and a failed open is never retried. Only non-Apple frontends fall back to cwd.
+#ifdef __APPLE__
+  if (options.log_file.empty()) return;
+#endif
   log_tried = true;
   log_file = std::fopen(options.log_file.empty() ? "melee_port.log" : options.log_file.c_str(), "w");
+  if (log_file && !pending.empty()) { std::fwrite(pending.data(), 1, pending.size(), log_file); std::fflush(log_file); }
+  std::string().swap(pending);
+}
+void keep_pending(const char* data, size_t size) {
+  if (!log_tried && pending.size() < (1u << 20)) pending.append(data, size);
 }
 }
 void close_log_file() {
@@ -50,6 +63,10 @@ void log(const char* fmt, ...) {
   if (log_file) {
     va_list copy; va_start(copy, fmt); std::vfprintf(log_file, fmt, copy); va_end(copy);
     std::fputc('\n', log_file); std::fflush(log_file);
+  } else if (!log_tried) {
+    char line[2048];
+    va_list copy; va_start(copy, fmt); int n = std::vsnprintf(line, sizeof line - 1, fmt, copy); va_end(copy);
+    if (n > 0) { size_t len = std::min<size_t>((size_t)n, sizeof line - 2); line[len] = '\n'; keep_pending(line, len + 1); }
   }
 }
 void log_guest_text(const char* data, size_t size) {
@@ -57,6 +74,7 @@ void log_guest_text(const char* data, size_t size) {
   if (log_closed) return;
   std::fwrite(data, 1, size, stdout); std::fflush(stdout);
   if (log_file) { std::fwrite(data, 1, size, log_file); std::fflush(log_file); }
+  else keep_pending(data, size);
 }
 [[noreturn]] void die(const char* fmt, ...) {
   char reason[4096];

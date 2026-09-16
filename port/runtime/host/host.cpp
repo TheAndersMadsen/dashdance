@@ -750,4 +750,7 @@ void gx_stats(uint64_t* commands, uint64_t* draws, uint64_t* vertices, uint32_t*
   gx::stats(commands, draws, vertices, efb_copies);
 }
 
+namespace { std::atomic<int> g_online_ping_ms{-1}; }
+void set_online_ping_ms(int ms) { g_online_ping_ms.store(ms, std::memory_order_relaxed); }
+int online_ping_ms() { return g_online_ping_ms.load(std::memory_order_relaxed); }
 }  // namespace host

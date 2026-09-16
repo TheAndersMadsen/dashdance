@@ -392,9 +392,12 @@ void menu_overlay(OverlayFrame& out, int ww, int wh, bool touch_controls_visible
   if (s.hud) {
     GcAdapterStatus adapter; const bool have_adapter = gcadapter_status(adapter);
     char line[200];
+    char rate[24] = "";
+    if (have_adapter && adapter.report_hz > 0) std::snprintf(rate, sizeof rate, "%.0f Hz", adapter.report_hz);   // measured, not bucketed: third-party adapters land between 125 and 1000
     std::snprintf(line, sizeof line, "sim %.1f ms   display %.0f Hz   late %llu%s%s", last_sim_frame_ms(), window_refresh_rate(), (unsigned long long)late_frame_count(),
-                  have_adapter ? "   GC adapter " : "", have_adapter ? (adapter.report_hz >= 900 ? "1000 Hz" : adapter.report_hz > 0 ? "125 Hz" : "") : "");
+                  have_adapter ? "   GC adapter " : "", rate);
     std::string hud = line;
+    if (const int ping = online_ping_ms(); ping >= 0) { hud += "   ping "; hud += std::to_string(ping); hud += " ms"; }
     if (const char* warn = latency_warning(); warn && *warn) { hud += "   "; hud += warn; }   // Low Power Mode, Bluetooth audio
     const float h = unit * 0.7f, pad = h * 0.4f, w = h * 0.55f * (float)hud.size() + pad * 2;
     const float hx = pad + safe_l, hy = pad + safe_t;

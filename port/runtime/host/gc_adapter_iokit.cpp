@@ -67,10 +67,17 @@ void reader_thread() {
   uint64_t reports = 0;
   auto window_start = std::chrono::steady_clock::now();
   bool rate_logged = false;
+  bool timeouts_supported = true;   // some hosts reject ReadPipeTO on interrupt pipes (kIOReturnBadArgument); fall back to blocking reads
   while (g_running.load()) {
     uint8_t buf[37];
     UInt32 size = sizeof buf;
-    const IOReturn r = (*g_interface)->ReadPipeTO(g_interface, g_pipe_in, buf, &size, 100, 200);
+    IOReturn r = timeouts_supported ? (*g_interface)->ReadPipeTO(g_interface, g_pipe_in, buf, &size, 100, 200) : (*g_interface)->ReadPipe(g_interface, g_pipe_in, buf, &size);
+    if (r == kIOReturnBadArgument && timeouts_supported) {
+      timeouts_supported = false;
+      log("gc adapter: timed reads rejected, using blocking reads");
+      size = sizeof buf;
+      r = (*g_interface)->ReadPipe(g_interface, g_pipe_in, buf, &size);
+    }
     if (r == kIOReturnSuccess) {
       failures = 0;
       if (size == 37 && buf[0] == 0x21) {
@@ -105,6 +112,7 @@ void reader_thread() {
 
 void close_adapter() {
   g_running.store(false);
+  if (g_interface && g_interface_open && g_pipe_in) (*g_interface)->AbortPipe(g_interface, g_pipe_in);   // wakes a blocking read
   if (g_thread.joinable()) g_thread.join();
   if (g_interface) {
     if (g_interface_open) { (*g_interface)->USBInterfaceClose(g_interface); g_interface_open = false; }

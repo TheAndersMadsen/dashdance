@@ -297,6 +297,7 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
       ping_us_[pidx] = time_us() - send_time;
       ping_sample_sum_us_.fetch_add(ping_us_[pidx], std::memory_order_relaxed);
       ping_sample_count_.fetch_add(1, std::memory_order_relaxed);
+      if (pidx == 0) host::set_online_ping_ms((int)(ping_us_[0] / 1000));
       if (frame % 600 == 0 && pidx == 0) host::log("slippi: ping %llu ms", (unsigned long long)(ping_us_[0] / 1000));
       break;
     }
