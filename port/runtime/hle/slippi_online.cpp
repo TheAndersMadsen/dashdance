@@ -164,6 +164,10 @@ std::string g_forced_error;
 bool g_play_session_active = false;
 uint8_t g_local_player_index = 0, g_remote_player_index = 1;
 uint32_t g_stall_frame_counts[REMOTE_PLAYER_MAX] = {};
+// Open remote-input gap per player: the frame it started at (0 = none). A gap
+// means the guest has to reuse old pads for the current frames - the usual
+// first-domino of an online desync, so it gets named in the log.
+int32_t g_input_gap_start[REMOTE_PLAYER_MAX] = {};
 uint64_t g_last_interval_time_us = 0;
 int32_t g_perf_debt = 0;
 int g_frames_to_skip = 0, g_frames_to_advance = 0, g_fall_behind = 0, g_fall_far_behind = 0;
@@ -317,12 +321,34 @@ void prepare_opponent_inputs(int32_t frame, bool should_skip, std::vector<uint8_
   for (int i = 0; i < remote_count; ++i) {
     results[i] = g_netplay->GetSlippiRemotePad(i, ROLLBACK_MAX_FRAMES);
     if (results[i]->is_disconnected) continue;
+    // Delivery-gap watch: if the newest remote input is older than the frame
+    // being simulated, the guest reuses pads - name the gap when it opens and
+    // again on the next checksum mismatch, so a desync points at its cause.
+    if (results[i]->latest_frame < frame) {
+      if (g_input_gap_start[i] == 0) {
+        g_input_gap_start[i] = frame;
+        host::log("slippi: remote input gap opens at frame %d (newest remote input %d, player %u)",
+                  frame, results[i]->latest_frame, results[i]->player_idx);
+      }
+    } else if (g_input_gap_start[i] != 0) {
+      host::log("slippi: remote input gap from frame %d closed at frame %d (player %u)",
+                g_input_gap_start[i], frame, results[i]->player_idx);
+      g_input_gap_start[i] = 0;
+    }
     int32_t cf = results[i]->checksum_frame;
     if (cf > g_last_checksum_frame && results[i]->checksum) {
       auto it = g_local_checksums.find(cf);
       if (it != g_local_checksums.end()) {
         g_last_checksum_frame = cf; ++g_checksums_compared;
-        if (it->second != results[i]->checksum) { ++g_checksums_mismatched; host::log("slippi: DESYNC: checksum mismatch at frame %d (ours %08X, player %u %08X)", cf, it->second, results[i]->player_idx, results[i]->checksum); }
+        if (it->second != results[i]->checksum) {
+          ++g_checksums_mismatched;
+          if (g_input_gap_start[i] != 0)
+            host::log("slippi: DESYNC: checksum mismatch at frame %d (ours %08X, player %u %08X; remote input gap open since frame %d)",
+                      cf, it->second, results[i]->player_idx, results[i]->checksum, g_input_gap_start[i]);
+          else
+            host::log("slippi: DESYNC: checksum mismatch at frame %d (ours %08X, player %u %08X; no remote input gap - suspect input conversion or sim divergence)",
+                      cf, it->second, results[i]->player_idx, results[i]->checksum);
+        }
         else if (g_checksums_compared % 20 == 0) host::log("slippi: checksums agree through frame %d (%u compared, %u mismatched)", cf, g_checksums_compared, g_checksums_mismatched);
       }
     }
@@ -384,6 +410,7 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
     g_in_online_match = true;
     host::input_mark_match_start();
     g_local_checksums.clear(); g_checksums_compared = 0; g_checksums_mismatched = 0; g_last_checksum_frame = 0;
+    for (auto& gap : g_input_gap_start) gap = 0;
   }
   if (is_disconnected()) {
     if (g_netplay && g_netplay->GetDisconnectReason() == NetplayClient::DisconnectReason::POOR_PERFORMANCE)

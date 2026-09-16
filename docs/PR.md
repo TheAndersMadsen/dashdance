@@ -10,7 +10,9 @@ Details and evidence for each are in `docs/MAC_FIXES.md`.
 - Show the adapter's measured polling rate in the HUD instead of rounding anything under 900 Hz to "125 Hz".
 - Keep the launcher from crashing when a replay's player name isn't valid UTF-8.
 - Fix desyncs against Dolphin players when UCF's shield drop fires. The Gecko code returns past its call site
-  (return address + 8), and the recompiler now resumes the caller there instead of right after the call.
+  (return address + 8), and the recompiler now resumes the caller there instead of right after the call. A decision
+  test now replays the Stadium desync's stick dive through the translated checks (25 cases), and online logs name a
+  remote-input gap - the usual first domino of a desync - when it opens and on the next checksum mismatch.
 - The headless executable links again (it called Discord presence, which only the app has).
 
 ## Features
