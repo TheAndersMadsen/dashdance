@@ -79,7 +79,7 @@ add_test(NAME port_input_script COMMAND port_input_script_test)
 add_executable(port_ppc_numeric_test tests/ppc_numeric_test.cpp runtime/ppc/numeric.cpp)
 target_include_directories(port_ppc_numeric_test PRIVATE runtime/ppc)
 add_test(NAME port_ppc_numeric COMMAND port_ppc_numeric_test)
-add_executable(port_ppc_dispatch_test tests/ppc_dispatch_test.cpp
+add_executable(port_ppc_dispatch_test tests/ppc_dispatch_test.cpp tests/ppc_dispatch_test_stubs.cpp
   runtime/ppc/ppc_runtime.cpp runtime/ppc/interp.cpp runtime/ppc/numeric.cpp)
 target_include_directories(port_ppc_dispatch_test PRIVATE tests/fixtures runtime/ppc runtime/host)
 add_test(NAME port_ppc_dispatch COMMAND port_ppc_dispatch_test)
