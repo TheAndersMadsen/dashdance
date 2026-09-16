@@ -82,6 +82,12 @@ add_test(NAME port_ppc_numeric COMMAND port_ppc_numeric_test)
 add_executable(port_ppc_dispatch_test tests/ppc_dispatch_test.cpp tests/ppc_dispatch_test_stubs.cpp
   runtime/ppc/ppc_runtime.cpp runtime/ppc/interp.cpp runtime/ppc/numeric.cpp)
 target_include_directories(port_ppc_dispatch_test PRIVATE tests/fixtures runtime/ppc runtime/host)
+if(NOT WIN32)
+  # Drives the actual translated guest functions with the Pokémon Stadium
+  # desync stick values; needs the guest objects from the normal build.
+  add_test(NAME port_shield_drop_decision
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/../tools/mac/shield_drop_test.sh" "${CMAKE_BINARY_DIR}")
+endif()
 add_test(NAME port_ppc_dispatch COMMAND port_ppc_dispatch_test)
 if(NOT MSVC)
   set(PORT_GENERATOR_TEST_ARGS --cxx "${CMAKE_CXX_COMPILER}")
