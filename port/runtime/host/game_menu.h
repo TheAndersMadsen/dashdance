@@ -2,7 +2,8 @@
 // Ship of Harkinian and friends have): open it with L+R+Start held for half a second on any
 // controller, F1 or Escape on the keyboard, or the MENU button next to the touch controls. While it
 // is open the game receives neutral inputs. Changes apply immediately and are saved for next time.
-// A Controls page configures each controller and the keyboard, with a step-by-step remap.
+// A Controls page configures each controller and the keyboard, with a step-by-step remap. Quit
+// Dashdance (pressed twice) ends the game and saves the settings.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include "host.h"

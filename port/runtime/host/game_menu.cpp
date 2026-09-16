@@ -26,7 +26,7 @@ constexpr int kEscapeScancode = 41;   // SDL_SCANCODE_ESCAPE
 constexpr int kSkipFrames = 6 * 60;   // remap: a control left untouched for 6 s keeps its binding
 
 enum class Page { Main, Controls, Remap };
-enum MainRow { ROW_SCALE, ROW_ANISO, ROW_UPSCALE, ROW_SHARPEN, ROW_VSYNC, ROW_WIDESCREEN, ROW_FLASH_LCANCEL, ROW_VOLUME, ROW_TOUCH_OPACITY, ROW_TOUCH_SIZE, ROW_FULLSCREEN, ROW_ONLINE_DELAY, ROW_CONTROLS, ROW_HUD, ROW_RESUME, ROW_MAIN_COUNT };
+enum MainRow { ROW_SCALE, ROW_ANISO, ROW_UPSCALE, ROW_SHARPEN, ROW_VSYNC, ROW_WIDESCREEN, ROW_FLASH_LCANCEL, ROW_VOLUME, ROW_TOUCH_OPACITY, ROW_TOUCH_SIZE, ROW_FULLSCREEN, ROW_ONLINE_DELAY, ROW_CONTROLS, ROW_HUD, ROW_RESUME, ROW_QUIT, ROW_MAIN_COUNT };
 enum ControlsRow { C_DEVICE, C_REMAP, C_STICK_DZ, C_CSTICK_DZ, C_TRIGGER, C_SWAP, C_RUMBLE, C_TEST_RUMBLE, C_MODIFIER, C_RESET, C_BACK };
 struct Device { std::string guid, name; };   // an empty guid is the keyboard
 
@@ -50,6 +50,7 @@ bool g_touch_visible[kMenuSurfaces] = {};
 float g_menu_button[kMenuSurfaces][4] = {{0, 0, 0, 0}, {0, 0, 0, 0}};   // MENU touch button (surface pixels), set by the overlay
 struct Layout { float x0, y0, x1, y1, row_h, top; } g_layout[kMenuSurfaces]{};   // last drawn panel, for touch hits
 int g_open_at_frame = -1;
+bool g_quit_armed = false;   // Quit asks for a second press so a stray A never ends a match
 
 std::string ascii(const std::string& s) { std::string out; for (char c : s) if (c >= 32 && c < 127) out += c; return out; }   // the glyph atlas is ASCII
 std::string upper(const std::string& s) { std::string out = ascii(s); for (char& c : out) c = (char)std::toupper((unsigned char)c); return out; }
@@ -97,6 +98,7 @@ const char* main_name(int r) {
     case ROW_CONTROLS: return "Controls";
     case ROW_HUD: return "Performance HUD";
     case ROW_RESUME: return "Resume game";
+    case ROW_QUIT: return "Quit Dashdance";
   }
   return "";
 }
@@ -117,6 +119,7 @@ std::string main_value(int r, const RuntimeSettings& s) {
     case ROW_ONLINE_DELAY: if (s.online_delay <= 1) return "1 frame (lowest)"; std::snprintf(b, sizeof b, "%d frames", s.online_delay); return b;
     case ROW_CONTROLS: return ">";
     case ROW_HUD: return s.hud ? "On" : "Off";
+    case ROW_QUIT: return g_quit_armed ? "Press again to quit" : "";
   }
   return "";
 }
@@ -257,10 +260,13 @@ void remap_assign(int input) {   // the same input on another control is cleared
   g_changed.store(true);
 }
 
+// Quit: the first press arms, the second ends the game cleanly (settings are saved on the way out).
+void quit_press() { if (g_quit_armed) request_exit(0); else g_quit_armed = true; }
+
 std::vector<int> page_rows() { return g_page == Page::Main ? main_rows() : g_page == Page::Controls ? controls_rows() : std::vector<int>{}; }
 void set_open(bool open) {
   g_open.store(open);
-  g_combo_frames = 0; g_repeat = 0; g_prev_dir = 0;
+  g_combo_frames = 0; g_repeat = 0; g_prev_dir = 0; g_quit_armed = false;
   if (!open) { g_page = Page::Main; g_capturing.store(false); }
   if (g_selected >= (int)page_rows().size()) g_selected = 0;
 }
@@ -345,10 +351,10 @@ void menu_frame(PadState pads[4]) {
         const int what = main_step(r, step, g_settings);
         if (what >= 0) { g_changed.store(true); apply_what = what; snapshot = g_settings; apply = g_apply; }
       };
-      if (fire && dir_y && !rows.empty()) g_selected = (g_selected + dir_y + (int)rows.size()) % (int)rows.size();
+      if (fire && dir_y && !rows.empty()) { g_selected = (g_selected + dir_y + (int)rows.size()) % (int)rows.size(); g_quit_armed = false; }
       else if (fire && dir_x && !rows.empty()) {
         const int r = rows[g_selected];
-        if (g_page == Page::Main) { if (r != ROW_RESUME && r != ROW_CONTROLS) main_change(r, dir_x); }
+        if (g_page == Page::Main) { if (r != ROW_RESUME && r != ROW_CONTROLS && r != ROW_QUIT) main_change(r, dir_x); }
         else if (value_row(r) && controls_act(r, dir_x)) g_changed.store(true);
       }
       if (!combo && !rows.empty()) {
@@ -357,6 +363,7 @@ void menu_frame(PadState pads[4]) {
           if (g_page == Page::Main) {
             if (r == ROW_RESUME) set_open(false);
             else if (r == ROW_CONTROLS) open_controls();
+            else if (r == ROW_QUIT) quit_press();
             else main_change(r, 1);
           } else if (controls_act(r, 1)) g_changed.store(true);
         } else if (pressed & BTN_B) {
@@ -390,12 +397,14 @@ bool menu_touch(float px, float py, int surface) {
     const int row = (int)((py - l.top) / std::max(l.row_h, 1.0f));
     const std::vector<int> rows = page_rows();
     if (row < 0 || row >= (int)rows.size()) return true;
+    if (row != g_selected) g_quit_armed = false;
     g_selected = row;
     const int r = rows[row];
     const bool left = px < l.x0 + (l.x1 - l.x0) / 3.0f;   // left third lowers, the rest raises
     if (g_page == Page::Main) {
       if (r == ROW_RESUME) set_open(false);
       else if (r == ROW_CONTROLS) open_controls();
+      else if (r == ROW_QUIT) quit_press();
       else {
         const int what = main_step(r, left ? -1 : 1, g_settings);
         if (what >= 0) { g_changed.store(true); apply_what = what; snapshot = g_settings; apply = g_apply; }
@@ -512,7 +521,7 @@ void menu_overlay(OverlayFrame& out, int ww, int wh, bool touch_controls_visible
     const std::string value = main ? main_value(r, s) : controls_value(r);
     const bool flash_row = main && r == ROW_FLASH_LCANCEL;
     out.texts.push_back({x0 + pad, ty, unit * 0.95f, 1, 1, 1, sel ? 1.0f : 0.85f, 0, main ? main_name(r) : controls_name(r), value.empty() ? panel_w - 2 * pad : panel_w * (flash_row ? 0.70f : 0.56f) - pad});
-    const bool steppable = main ? (r != ROW_RESUME && r != ROW_CONTROLS) : value_row(r);
+    const bool steppable = main ? (r != ROW_RESUME && r != ROW_CONTROLS && r != ROW_QUIT) : value_row(r);
     if (!value.empty()) out.texts.push_back({x1 - pad, ty, unit * 0.95f, 0.97f, 0.79f, 0.28f, sel ? 1.0f : 0.8f, 2, sel && steppable ? "<  " + value + "  >" : value, panel_w * (flash_row ? 0.25f : 0.42f) - pad});
   }
   const char* hint = touch_controls_visible ? "Tap a row's left or right side to change it"
