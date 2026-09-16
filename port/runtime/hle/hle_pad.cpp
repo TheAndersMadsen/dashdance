@@ -3,6 +3,7 @@
 #include "hle.h"
 #include "pad_rumble.h"
 #include <cstring>
+#include <cstdlib>
 
 static uint32_t s_spec = 5;
 
@@ -31,6 +32,22 @@ HLE(PADRead) {
   host::pump_completions();
   static int reported = 0;
   if (host::options.trace_calls && reported++ < 10) host::log("[pad] PADRead(%08X)", ARG0);
+#if defined(MELEE_PORT_OFFLINE) || defined(TARGET_PC)
+  static unsigned pad_trace_count = 0;
+  static const bool pad_trace = std::getenv("MELEE_PAD_TRACE") != nullptr;
+  if (pad_trace && ++pad_trace_count % 120 == 0) {
+    host::PadState probe[4];
+    host::input_poll(probe);
+    uint64_t cmap_button = host::rd32(0x80479C30);
+    cmap_button |= (uint64_t)host::rd32(0x80479C34) << 32;
+    uint64_t cmap_trigger = host::rd32(0x80479C38);
+    cmap_trigger |= (uint64_t)host::rd32(0x80479C3C) << 32;
+    host::log("[padtrace] call=%u scene=%02x/%02x p1: err=%d btn=%04x sx=%d sy=%d cmap btn=%04llx trig=%04llx",
+              pad_trace_count, host::rd8(0x80479D30), host::rd8(0x80479D33),
+              probe[0].err, probe[0].button, probe[0].stick_x, probe[0].stick_y,
+              (unsigned long long)(cmap_button & 0xFFFF), (unsigned long long)(cmap_trigger & 0xFFFF));
+  }
+#endif
   host::PadState pads[4];
   host::input_poll(pads);
   uint32_t base = ARG0, mask = 0;
