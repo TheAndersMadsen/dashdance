@@ -15,11 +15,12 @@ BUILD=${1:-build/mac}
 OUT=$BUILD/shield_drop_decision_test
 OBJS=$OUT.objs
 find "$BUILD/port/CMakeFiles/guest.dir" -name '*.o' > "$OBJS"
+RUNTIME_DIR=$(find "$BUILD/port/CMakeFiles" -maxdepth 1 -type d -name 'runtime_*.dir' | sort | sed -n 1p)
 for o in numeric ppc_runtime interp; do
-  find "$BUILD/port/CMakeFiles/runtime_mac.dir/runtime/ppc" -name "$o.cpp.o" >> "$OBJS"
+  find "$RUNTIME_DIR/runtime/ppc" -name "$o.cpp.o" >> "$OBJS"
 done
 FLAGS="-O1 -std=c++20 -fno-fast-math -ffp-model=strict -ffp-contract=off"
-INC="-I port/runtime/ppc -I build/mac/generated/guest -I port/runtime/hle -I port/runtime/host"
+INC="-I port/runtime/ppc -I $BUILD/generated/guest -I port/runtime/hle -I port/runtime/host"
 clang++ $FLAGS $INC -c port/tests/shield_drop_test_stubs.cpp -o "$OUT.stubs.o"
 clang++ $FLAGS $INC -c port/tests/shield_drop_decision_test.cpp -o "$OUT.test.o"
 echo "$OUT.stubs.o" >> "$OBJS"

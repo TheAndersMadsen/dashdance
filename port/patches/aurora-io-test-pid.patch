@@ -1,0 +1,30 @@
+diff --git a/tests/io_test.cpp b/tests/io_test.cpp
+index 3913fb6..9ec09f9 100644
+--- a/tests/io_test.cpp
++++ b/tests/io_test.cpp
+@@ -3,6 +3,12 @@
+ 
+ #include <gtest/gtest.h>
+ 
++#if defined(_WIN32)
++#include <process.h>
++#else
++#include <unistd.h>
++#endif
++
+ #include <algorithm>
+ #include <array>
+ #include <atomic>
+@@ -17,8 +23,11 @@ class IoTest : public testing::Test {
+ protected:
+   void SetUp() override {
+     static std::atomic_uint64_t counter{0};
++    // gtest_discover_tests runs each case as its own process; the per-process
++    // counter alone collides across concurrently running cases in a shared /tmp.
+     m_directory = std::filesystem::temp_directory_path() /
+-                  ("aurora-io-test-" + std::to_string(counter.fetch_add(1, std::memory_order_relaxed)));
++                  ("aurora-io-test-" + std::to_string(getpid()) + "-" +
++                   std::to_string(counter.fetch_add(1, std::memory_order_relaxed)));
+     ASSERT_TRUE(aurora::io::create_directories(m_directory)) << SDL_GetError();
+   }
+ 
