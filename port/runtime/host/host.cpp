@@ -608,8 +608,9 @@ void retrace() {
   if (g_retraces % 60 == 0 || (options.frames && g_retraces >= options.frames)) {
     uint64_t commands, draws, vertices; uint32_t copies;
     gx_stats(&commands, &draws, &vertices, &copies);
-    log("[frame %u] gx: %llu cmds %llu draws %llu verts %u efb-copies | disc: %llu reads %.1f MB | %s",
-        g_retraces, commands, draws, vertices, copies, g_disc_reads, g_disc_bytes / 1048576.0, sim_cost_line(60).c_str());
+    // call depth: host guest-call nesting at the retrace; it should stay flat, and growth means a leak.
+    log("[frame %u] gx: %llu cmds %llu draws %llu verts %u efb-copies | disc: %llu reads %.1f MB | call depth %u | %s",
+        g_retraces, commands, draws, vertices, copies, g_disc_reads, g_disc_bytes / 1048576.0, cpu->call_depth, sim_cost_line(60).c_str());
   }
   if (options.frames && g_retraces >= options.frames) request_exit(0);
   if (g_exit) {

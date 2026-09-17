@@ -186,10 +186,9 @@ Fn lookup(uint32_t addr) {
 
 void call(Context& c, uint8_t* m, uint32_t addr) {
   Fn fn = lookup(addr);
-  if (++c.call_depth > 20000) fatal(c, "guest call depth exceeded", addr);
+  CallDepthScope depth(c, addr);
   if (fn) fn(c, m);
   else interpret(c, m, addr);   // code that only exists in RAM (dat-loaded routines)
-  --c.call_depth;
 }
 
 uint64_t g_enter_count = 0;

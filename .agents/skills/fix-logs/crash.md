@@ -44,7 +44,9 @@ once that retrace is reached.
 
 ## Known so far
 
-- Open issue 1 in `docs/MAC_FIXES.md`: `guest call depth exceeded` in
-  `HSD_JObjSetupMatrixSub` ↔ `HSD_JObjMakeMatrix`, on the same JObj (r3 = r31), so that JObj is its own
-  parent. It was online, with rollbacks earlier in the match. The replay ran clean offline up to its last
-  frame.
+- `guest call depth exceeded` is not always real recursion. Compare the guest call stack in the log: if it is
+  shallow, the host counter leaked (fix 8 in `docs/MAC_FIXES.md`: a guest `longjmp` skipped the decrement).
+  The `[frame N]` line logs `call depth N` every 60 frames; it should stay flat, so watch it grow in a headless
+  replay (`dashdance_resim.py`, the log lands next to `--out`) to find the frames that leak.
+- Before blaming an object, check its fields with `crashram.py`: for fix 8 the "self-parented JObj" guess from
+  r3 = r31 was wrong (its parent was 0).

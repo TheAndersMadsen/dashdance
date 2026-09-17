@@ -25,8 +25,15 @@ void mmio_write(uint32_t, uint32_t, int) { throw std::runtime_error("unexpected 
 }
 namespace guest {
 void native_fixture(ppc::Context& c, uint8_t*) { ++c.r[7]; }
-const FnEntry fn_table[] = {{0x80008000, native_fixture}};
-const size_t fn_table_count = 1;
+// A translated __setjmp caller: it catches a guest longjmp thrown two calls further in, as emit.py's wrapper does.
+void longjmp_fixture(ppc::Context& c, uint8_t*) { throw ppc::GuestLongJmp{0, 1}; }
+void longjmp_middle_fixture(ppc::Context& c, uint8_t* m) { ppc::call(c, m, 0x80008004); }
+void setjmp_fixture(ppc::Context& c, uint8_t* m) {
+  try { ppc::call(c, m, 0x80008008); } catch (const ppc::GuestLongJmp&) { c.r[8] = c.call_depth; }
+}
+const FnEntry fn_table[] = {{0x80008000, native_fixture}, {0x80008004, longjmp_fixture},
+                            {0x80008008, longjmp_middle_fixture}, {0x8000800C, setjmp_fixture}};
+const size_t fn_table_count = 4;
 }
 namespace {
 unsigned checks = 0, failures = 0;
@@ -67,6 +74,10 @@ int main() {
   eq("diagnostic guest result", c.r[3], 0x8000);
   eq("nested call entered native target", c.r[7], 1);
   eq("call depth restored", c.call_depth, 0);
+  c = {};
+  for (int i = 0; i < 25000; ++i) ppc::call(c, m, 0x8000800C);
+  eq("longjmp unwinds call depth to the catching function", c.r[8], 1);
+  eq("call depth restored after longjmp", c.call_depth, 0);
   d = ppc::aot_diagnostics();
   eq("diagnostic interpreted calls", d.interpreted_calls, 1);
   eq("diagnostic actual steps", d.interpreted_instructions, 6);

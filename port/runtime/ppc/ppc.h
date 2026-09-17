@@ -119,6 +119,19 @@ void record_interpreter_instruction(uint32_t pc, uint32_t word);
 void record_interpreter_transfer(uint32_t from, uint32_t to, AotTransferKind kind);
 void record_loaded_module(const char* name, uint32_t addr, uint32_t size, const char* sha256);
 [[noreturn]] void fatal(Context& c, const char* what, uint32_t a);
+// One level of host guest-call nesting. A scope, not ++/-- around the call, because guest longjmp and
+// OSLoadContext unwind as C++ exceptions: a manual decrement was skipped for every frame they passed, and
+// a stage's setjmp/longjmp animation lookup leaked hundreds of levels per use until a match hit the limit.
+struct CallDepthScope {
+  Context& c;
+  CallDepthScope(Context& ctx, uint32_t addr) : c(ctx) {
+    if (c.call_depth >= 20000) fatal(c, "guest call depth exceeded", addr);
+    ++c.call_depth;
+  }
+  ~CallDepthScope() { --c.call_depth; }
+  CallDepthScope(const CallDepthScope&) = delete;
+  CallDepthScope& operator=(const CallDepthScope&) = delete;
+};
 // __longjmp: thrown by the HLE, caught by the translated function that called __setjmp on
 // `buf` (its body is wrapped in a retry loop; see Emitter). The catch restores the registers
 // the MSL longjmp would and resumes at the setjmp return address saved in the buffer.

@@ -45,9 +45,7 @@ struct Interp {
     for (;;) {
       if (Fn fn = lookup(t)) {
         record_interpreter_transfer(pc, t, AotTransferKind::CallToAot);
-        if (++c.call_depth > 20000) fatal(c, "guest call depth exceeded", t);
-        fn(c, m);
-        --c.call_depth;
+        { CallDepthScope depth(c, t); fn(c, m); }
         record_interpreter_transfer(t, linked ? pc + 4 : c.lr, AotTransferKind::ReturnFromAot);
         if (linked) { pc += 4; return; }         // bl to host code: continue after the call
         t = c.lr;                                 // tail transfer: the host function returned to LR
