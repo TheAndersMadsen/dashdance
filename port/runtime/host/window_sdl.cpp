@@ -482,6 +482,8 @@ void window_input_init() {
 }
 std::vector<ControllerInfo> window_list_controllers() {
   std::vector<ControllerInfo> list;
+  PadState scratch[4];
+  gcadapter_poll(scratch);   // the adapter is opened lazily on first poll; without this the launcher never triggers it before a match starts
   GcAdapterStatus adapter;
   if (gcadapter_status(adapter)) {
     ControllerInfo info;
