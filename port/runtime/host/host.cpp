@@ -814,4 +814,16 @@ void gx_stats(uint64_t* commands, uint64_t* draws, uint64_t* vertices, uint32_t*
 namespace { std::atomic<int> g_online_ping_ms{-1}; }
 void set_online_ping_ms(int ms) { g_online_ping_ms.store(ms, std::memory_order_relaxed); }
 int online_ping_ms() { return g_online_ping_ms.load(std::memory_order_relaxed); }
+
+// The controller that feeds `game_port`: the adapter socket and/or the SDL pad serving that port.
+void input_rumble(int game_port, bool on) {
+  if (game_port < 0 || game_port > 3) return;
+  gcadapter_rumble(game_port, on);
+  window_gamepad_rumble(game_port, on);
+}
+// The local player's controller during an online match: the game's ports are match slots there,
+// so rumble everything that could be feeding local input.
+void input_rumble_local(bool on) {
+  for (int i = 0; i < 4; ++i) { gcadapter_rumble(i, on); window_gamepad_rumble(i, on); }
+}
 }  // namespace host

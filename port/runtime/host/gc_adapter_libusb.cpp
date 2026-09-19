@@ -162,6 +162,12 @@ void gcadapter_rumble(int port, bool on) {
 }
 
 bool gcadapter_status(GcAdapterStatus&) { return false; }
+// PADRecalibrate: drop the captured origins so the next report re-captures them.
+void gcadapter_recalibrate(int port) {
+  std::lock_guard<std::mutex> lk(g_mutex);
+  if (port < 0 || port > 3) { for (auto& o : g_origin) o.set = false; }
+  else g_origin[port].set = false;
+}
 void gcadapter_shutdown() {
   close_adapter();
   if (g_context) { libusb_exit(g_context); g_context = nullptr; }

@@ -21,9 +21,13 @@ Backend* g_backend = nullptr;
 Frame g_frame;
 TextureSnapshotCache g_texture_snapshots;
 uint64_t g_frame_sequence = 0;
+bool g_discontinuity = false;   // simulation thread only, like the rest of this file's state
 std::vector<uint8_t> g_buf;
-size_t g_buf_pos = 0;      // parse cursor into g_buf (bytes before it are consumed)
-size_t g_need = 0;         // total bytes the command at the cursor still needs before it can be parsed (0 = unknown)
+size_t g_buf_pos = 0;   // parsed prefix of g_buf
+// Bytes the pending (incomplete) command at g_buf_pos needs before it can parse. The game writes the
+// FIFO a few bytes at a time, so retrying a large vertex primitive on every write was quadratic.
+size_t g_parse_need = 0;
+inline size_t incomplete(size_t need) { g_parse_need = need; return 0; }
 uint32_t g_cp_version = 1; // bumped on every CP register write: invalidates the vertex-descriptor cache
 // Draw identity bookkeeping (reset per frame).
 uint32_t g_dl_addr = 0, g_dl_draw_ordinal = 0, g_dl_call_ordinal = 0;
@@ -100,12 +104,19 @@ const VertexDesc& build_desc(uint32_t fmt) {
   return cache[fmt];
 }
 
-float read_component(const uint8_t* p, uint32_t format, uint32_t frac) {
+// 2^-frac for the 5-bit vertex fraction field. The values are exact powers of two, identical to
+// std::ldexp(1.0f, -frac), which cost a C library call for every component of every vertex.
+constexpr float kFracScale[32] = {
+    1.0f, 0x1p-1f, 0x1p-2f, 0x1p-3f, 0x1p-4f, 0x1p-5f, 0x1p-6f, 0x1p-7f, 0x1p-8f, 0x1p-9f, 0x1p-10f, 0x1p-11f,
+    0x1p-12f, 0x1p-13f, 0x1p-14f, 0x1p-15f, 0x1p-16f, 0x1p-17f, 0x1p-18f, 0x1p-19f, 0x1p-20f, 0x1p-21f, 0x1p-22f,
+    0x1p-23f, 0x1p-24f, 0x1p-25f, 0x1p-26f, 0x1p-27f, 0x1p-28f, 0x1p-29f, 0x1p-30f, 0x1p-31f};
+inline float read_component(const uint8_t* p, uint32_t format, uint32_t frac) {
+  const float scale = kFracScale[frac & 31];
   switch (format) {
-    case 0: return (float)p[0] * std::ldexp(1.0f, -(int)frac);
-    case 1: return (float)(int8_t)p[0] * std::ldexp(1.0f, -(int)frac);
-    case 2: return (float)(uint16_t)be16(p) * std::ldexp(1.0f, -(int)frac);
-    case 3: return (float)(int16_t)be16(p) * std::ldexp(1.0f, -(int)frac);
+    case 0: return (float)p[0] * scale;
+    case 1: return (float)(int8_t)p[0] * scale;
+    case 2: return (float)(uint16_t)be16(p) * scale;
+    case 3: return (float)(int16_t)be16(p) * scale;
     default: { uint32_t u = be32(p); float f; std::memcpy(&f, &u, 4); return f; }
   }
 }
@@ -285,6 +296,7 @@ void snapshot_textures(DrawCall& dc) {
 }
 
 void record_draw(uint32_t primitive, uint32_t first, uint32_t count, uint32_t components) {
+  host::SimCostScope record_cost(host::SIM_RECORD);
   // Built on the stack (hot in cache), then moved in: filling the vector element directly measured
   // worse, because each field write lands in cold memory instead of one sequential copy.
   DrawCall dc{DrawCall::SkipInit{}};
@@ -295,9 +307,13 @@ void record_draw(uint32_t primitive, uint32_t first, uint32_t count, uint32_t co
   dc.bp = g_bp;
   std::memcpy(dc.posMatrices, g_xf.posMatrices, sizeof dc.posMatrices);
   std::memcpy(dc.normalMatrices, g_xf.normalMatrices, sizeof dc.normalMatrices);
-  std::memcpy(dc.postMatrices, g_xf.postMatrices, sizeof dc.postMatrices);
-  std::memcpy(dc.lights, g_xf.lights, sizeof dc.lights);
   std::memcpy(dc.xf_regs, &g_xf.raw[0x1000], sizeof dc.xf_regs);
+  // Post-transform matrices and lights are 1.5 KB of the draw and most draws use neither; the
+  // renderer reads them under the same tests (fill_vs_constants), so skipped copies are never read.
+  if (dc.xf_regs[0x12] & 1) std::memcpy(dc.postMatrices, g_xf.postMatrices, sizeof dc.postMatrices);
+  bool lit = false;
+  for (uint32_t j = 0; j < (dc.xf_regs[0x09] & 3); ++j) lit = lit || lit_enable(dc.xf_regs[0x0E + j]) || lit_enable(dc.xf_regs[0x10 + j]);
+  if (lit) std::memcpy(dc.lights, g_xf.lights, sizeof dc.lights);
   dc.matrix_index_a = g_cp.matrix_index_a();
   dc.matrix_index_b = g_cp.matrix_index_b();
   std::memcpy(dc.tev_colors, g_tev_colors, sizeof g_tev_colors);
@@ -313,6 +329,8 @@ void record_draw(uint32_t primitive, uint32_t first, uint32_t count, uint32_t co
   }
   { host::SimCostScope cost(host::SIM_OBSERVE);
     dc.identity = observed_draw_identity(dc.identity, dc.object_generation);
+    dc.owner_player = observed_owner();   // SkipInit above means this has to be written every draw
+    dc.skinned = observed_skinned();
     dc.authored_pose = capture_authored_pose(); }
   g_frame.draws.push_back(std::move(dc));
   g_frame.commands.push_back({FrameCommand::Draw, (uint32_t)g_frame.draws.size() - 1});
@@ -385,7 +403,16 @@ void bp_write(uint32_t value) {
       ++g_efb_copies;
       if (c.to_xfb) {
         g_frame.sequence = ++g_frame_sequence;
+        g_frame.scene_major = host::rd8(0x80479D30);
+        g_frame.scene_minor = host::rd8(0x80479D33);
+        {
+          static uint16_t last_scene = 0xFFFF;
+          const uint16_t scene = (uint16_t)(g_frame.scene_major << 8 | g_frame.scene_minor);
+          if (scene != last_scene) { host::log("scene: major %02X minor %02X (frame %llu)", g_frame.scene_major, g_frame.scene_minor, (unsigned long long)g_frame.sequence); last_scene = scene; }
+        }
         g_frame.time = host::now_seconds(); // completed snapshot availability anchors presentation
+        g_frame.discontinuous = g_discontinuity;
+        g_discontinuity = false;
         if (g_backend) g_backend->submit_and_recycle(g_frame);   // hands over the buffers, returns recycled ones
         else g_frame.clear();
         g_texture_snapshots.end_frame();
@@ -435,33 +462,33 @@ void run_display_list(uint32_t addr, uint32_t size) {
 size_t parse_command(const uint8_t* d, size_t len) {
   uint8_t op = d[0];
   if (op == 0x00) return 1;
-  if (op == 0x08) { if (len < 6) { g_need = 6; return 0; } g_cp.reg[d[1]] = be32(d + 2); ++g_cp_version; return 6; }
+  if (op == 0x08) { if (len < 6) return incomplete(6); g_cp.reg[d[1]] = be32(d + 2); ++g_cp_version; return 6; }
   if (op == 0x10) {
-    if (len < 5) { g_need = 5; return 0; }
+    if (len < 5) return incomplete(5);
     uint32_t count = (be16(d + 1) & 0xF) + 1, address = be16(d + 3);
     size_t need = 5 + count * 4;
-    if (len < need) { g_need = need; return 0; }
+    if (len < need) return incomplete(need);
     xf_load(address, count, d + 5);
     return need;
   }
   if (op == 0x20 || op == 0x28 || op == 0x30 || op == 0x38) {
-    if (len < 5) { g_need = 5; return 0; }
+    if (len < 5) return incomplete(5);
     xf_indexed_load(op, be32(d + 1));
     return 5;
   }
   if (op == 0x40) {
-    if (len < 9) { g_need = 9; return 0; }
+    if (len < 9) return incomplete(9);
     run_display_list(be32(d + 1), be32(d + 5));
     return 9;
   }
   if (op == 0x48) return 1;
-  if (op == 0x61) { if (len < 5) { g_need = 5; return 0; } bp_write(be32(d + 1)); return 5; }
+  if (op == 0x61) { if (len < 5) return incomplete(5); bp_write(be32(d + 1)); return 5; }
   if (op >= 0x80 && op < 0xC0) {
-    if (len < 3) { g_need = 3; return 0; }
+    if (len < 3) return incomplete(3);
     uint32_t fmt = op & 7, count = be16(d + 1);
     const VertexDesc& desc = build_desc(fmt);
     size_t need = 3 + (size_t)count * desc.size;
-    if (len < need) { g_need = need; return 0; }
+    if (len < need) return incomplete(need);
     if (count) {
       uint32_t first = (uint32_t)g_frame.vertices.size();
       uint32_t components = decode_vertices(desc, d + 3, count, fmt);
@@ -476,6 +503,8 @@ size_t parse_command(const uint8_t* d, size_t len) {
 
 }  // namespace
 
+void mark_discontinuity() { g_discontinuity = true; }
+
 void init(Backend* backend) {
   g_backend = backend;
   std::memset(&g_bp, 0, sizeof g_bp);
@@ -483,21 +512,24 @@ void init(Backend* backend) {
   std::memset(&g_xf, 0, sizeof g_xf);
   std::memset(g_tmem, 0, sizeof g_tmem);
   g_frame.clear();
-  g_buf.clear(); g_buf_pos = 0; g_need = 0; ++g_cp_version;
+  g_buf.clear(); g_buf_pos = 0; g_parse_need = 0; ++g_cp_version;
 }
 
 void write_fifo(uint32_t value, int bytes) {
-  for (int i = bytes - 1; i >= 0; --i) g_buf.push_back((uint8_t)(value >> (8 * i)));
-  if (g_buf.size() - g_buf_pos < g_need) return;   // inside a draw whose vertices are still streaming in
-  g_need = 0;
+  const size_t at = g_buf.size();
+  g_buf.resize(at + (size_t)bytes);   // one size update per write instead of a push_back per byte
+  for (int i = 0; i < bytes; ++i) g_buf[at + i] = (uint8_t)(value >> (8 * (bytes - 1 - i)));
+  if (g_buf.size() - g_buf_pos < g_parse_need) return;   // the pending command is still incomplete
+  g_parse_need = 0;
   while (g_buf_pos < g_buf.size()) {
     size_t n = parse_command(g_buf.data() + g_buf_pos, g_buf.size() - g_buf_pos);
-    if (!n) break;
+    if (!n) break;               // parse_command recorded how many bytes it needs
     g_buf_pos += n;
+    g_parse_need = 0;            // a display list inside the command may have left a stale need
     ++g_commands;
   }
   if (g_buf_pos == g_buf.size()) { g_buf.clear(); g_buf_pos = 0; }
-  else if (g_buf_pos >= (256u << 10)) { g_buf.erase(g_buf.begin(), g_buf.begin() + g_buf_pos); g_buf_pos = 0; }
+  else if (g_buf_pos >= 1 << 16) { g_buf.erase(g_buf.begin(), g_buf.begin() + g_buf_pos); g_buf_pos = 0; }
 }
 
 void stats(uint64_t* commands, uint64_t* draws, uint64_t* vertices, uint32_t* efb_copies) {

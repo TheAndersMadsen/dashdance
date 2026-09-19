@@ -158,4 +158,7 @@ void gamepad_rumble(int port, bool on) {
   if (!g_pad_initialized) return;
   PADControlMotor(uint32_t(port), on ? PAD_MOTOR_RUMBLE : PAD_MOTOR_STOP);
 }
+
+// The controller that feeds `game_port`, and the whole local side: implemented in host.cpp.
+
 }  // namespace host

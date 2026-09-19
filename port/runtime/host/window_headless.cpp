@@ -19,3 +19,4 @@ void window_set_title(const wchar_t*) {}
 bool window_closed() { return false; }
 void window_client_size(int* w, int* h) { if (w) *w = 0; if (h) *h = 0; }
 }  // namespace host
+

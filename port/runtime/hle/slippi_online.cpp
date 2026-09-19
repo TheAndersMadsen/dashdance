@@ -26,6 +26,7 @@ void shutdown() { g_initialized = false; }
 uint64_t rollback_count() { return 0; }
 int32_t current_online_frame() { return 0; }
 bool is_online_match() { return false; }
+uint8_t local_player_slot() { return 0; }
 bool handle(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, std::vector<uint8_t>& q) {
   if (!g_initialized) init();
   return offline::handle(cmd, payload, payload_len, q);
@@ -852,6 +853,7 @@ void handle_get_player_settings(std::vector<uint8_t>& q) {
 Config& config() { return g_config; }
 bool available() { return true; }
 uint64_t rollback_count() { return g_rollbacks; }
+uint8_t local_player_slot() { return g_local_player_index; }
 int32_t current_online_frame() { return g_current_online_frame; }
 bool is_online_match() { return g_in_online_match; }
 

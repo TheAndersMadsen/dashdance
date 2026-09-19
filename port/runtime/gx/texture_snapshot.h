@@ -25,19 +25,6 @@ class TextureSnapshotCache {
         !std::memcmp(s.image.data(), image, image_size) &&
         (!palette_size || !std::memcmp(s.palette.data(), palette, palette_size));
   }
-  // Cheap check for draws inside one simulation frame: the palette (up to its first and last 256 bytes) and the image's
-  // first and last 256 bytes, where the smaller mip levels live. A texture drawn again with another palette, or with a mip
-  // level rewritten in place, no longer reuses the first capture of that frame; an unchanged one still costs a few
-  // hundred bytes of memcmp instead of a full compare.
-  static bool edges_equal(const std::vector<uint8_t>& kept, const uint8_t* bytes, size_t size) {
-    if (kept.size() != size) return false;
-    if (!size) return true;
-    const size_t edge = std::min<size_t>(size, 256);
-    return !std::memcmp(kept.data(), bytes, edge) && !std::memcmp(kept.data() + size - edge, bytes + size - edge, edge);
-  }
-  static bool quick_equal(const TextureSnapshot& s, const uint8_t* image, size_t image_size, const uint8_t* palette, size_t palette_size) {
-    return edges_equal(s.palette, palette, palette_size) && edges_equal(s.image, image, image_size);
-  }
 public:
   void clear() { entries.clear(); last_source.clear(); }
   // End of a simulation frame. The cache survives it: Melee reuses the same texture memory every
@@ -56,15 +43,15 @@ public:
     // Most draws reuse their source. Vectorized memcmp avoids rehashing
     // every byte with a serial hash recurrence; changes still receive a new copy.
     auto previous = last_source.find(image);
-    if (previous != last_source.end()) {
-      // Verified once per simulation frame: the same texture is drawn many times a frame (fonts, HUD,
-      // stage tiles) and comparing its bytes on every draw was the largest remaining host cost per draw.
-      if (previous->second.used == generation && quick_equal(*previous->second.snapshot, image, image_size, palette, palette_size))
-        return previous->second.snapshot;
-      if (equal(*previous->second.snapshot, image, image_size, palette, palette_size)) {
-        previous->second.used = generation;
-        return previous->second.snapshot;
-      }
+    // There used to be a fast path here that returned the cached snapshot for a source already seen
+    // this frame, comparing only the address and the two sizes. Melee rewrites texture and palette
+    // memory in place, so any draw after such a write rendered the bytes from before it: a texture
+    // or palette animated within a single frame showed its previous contents, which is one way a
+    // draw ends up looking wrong for exactly one frame. Correctness needs the comparison, and the
+    // comparison below is a vectorized memcmp of a few KB, so the cost is bounded.
+    if (previous != last_source.end() && equal(*previous->second.snapshot, image, image_size, palette, palette_size)) {
+      previous->second.used = generation;
+      return previous->second.snapshot;
     }
     uint64_t hash = hash_bytes(image, image_size) ^ (hash_bytes(palette, palette_size) * 31);
     auto range = entries.equal_range(hash);

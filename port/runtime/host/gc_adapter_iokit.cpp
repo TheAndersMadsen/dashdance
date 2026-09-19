@@ -256,6 +256,13 @@ bool gcadapter_status(GcAdapterStatus& out) {
   return true;
 }
 
+// PADRecalibrate: the game re-reads the controller's neutral. Drop the captured origins so the
+// next report re-captures them; a stick deflected when the adapter first reported recovers.
+void gcadapter_recalibrate(int port) {
+  std::lock_guard<std::mutex> lk(g_mutex);
+  if (port < 0 || port > 3) { for (auto& o : g_origin) o.set = false; }
+  else g_origin[port].set = false;
+}
 void gcadapter_shutdown() { close_adapter(); }
 
 }  // namespace host

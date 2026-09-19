@@ -31,5 +31,6 @@ bool handle(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, std::vect
 uint64_t rollback_count();
 int32_t current_online_frame();
 bool is_online_match();
+uint8_t local_player_slot();
 
 }  // namespace slippi::online

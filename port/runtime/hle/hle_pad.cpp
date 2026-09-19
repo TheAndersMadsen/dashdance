@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "hle.h"
 #include "pad_rumble.h"
+#include "slippi_online.h"
 #include <cstring>
 #include <cstdlib>
 
@@ -9,17 +10,31 @@ static uint32_t s_spec = 5;
 
 HLE(PADInit) { RET(1); }
 HLE(PADReset) { RET(1); }
-HLE(PADRecalibrate) { RET(1); }
-// PADControlMotor(chan, command): 0 stop, 1 rumble, 2 stop hard.
+// The game asks for the controller's neutral to be re-read. Doing nothing left a stick that
+// deflected when the adapter first reported with a wrong neutral for the whole session.
+HLE(PADRecalibrate) {
+  const int port = ARG0 == 0xFFFFFFFFu ? -1 : (int)ARG0;
+  host::gcadapter_recalibrate(port);
+  RET(1);
+}
+// PADControlMotor(chan, command): 0 stop, 1 rumble, 2 stop hard. Online, the game's ports are the
+// match's slots, not the sockets on the adapter: only the local slot's motor command means anything
+// here, and it goes to whatever controller is feeding the local input. Everything else is the
+// opponent's rumble, which is theirs to feel, not ours.
+static void deliver_rumble(int game_port, bool on) {
+  if (slippi::online::is_online_match()) {
+    if (game_port == (int)slippi::online::local_player_slot()) host::input_rumble_local(on);
+    return;
+  }
+  host::input_rumble(game_port, on);
+}
 HLE(PADControlMotor) {
   const auto decision = pad::decide_rumble(
       ARG0, ARG1, host::rd8(0x80479D30), host::rd8(0x80479D33), c.r[13],
       host::ram, ppc::RAM_SIZE);
-  if (decision.deliver) {
-    host::gcadapter_rumble(decision.physical_port, decision.on);
-  }
+  if (decision.deliver) deliver_rumble((int)decision.physical_port, decision.on);
 }
-HLE(PADControlAllMotors) { for (int i = 0; i < 4; ++i) host::gcadapter_rumble(i, host::rd32(ARG0 + 4 * i) == 1); }
+HLE(PADControlAllMotors) { for (int i = 0; i < 4; ++i) { const auto decision = pad::decide_rumble(i, host::rd32(ARG0 + 4 * i) == 1 ? 1u : 0u, host::rd8(0x80479D30), host::rd8(0x80479D33), c.r[13], host::ram, ppc::RAM_SIZE); if (decision.deliver) deliver_rumble(i, decision.on); } }
 HLE(PADSetSpec) { s_spec = ARG0; }
 HLE(PADGetSpec) { RET(s_spec); }
 HLE(PADGetType) { if (ARG1) host::wr32(ARG1, 0x08000000); RET(1); }

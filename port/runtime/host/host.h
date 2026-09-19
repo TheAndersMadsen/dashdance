@@ -90,7 +90,7 @@ void close_state_trace();
 bool state_trace_output_ok();
 
 // ---- simulation-thread cost accounting (per retrace; logged when a frame exceeds 20 ms) ----
-enum SimCost { SIM_DVD, SIM_AX, SIM_JUKEBOX, SIM_EXI, SIM_SNAPSHOT, SIM_QUEUE, SIM_OBSERVE, SIM_RENDER, SIM_TEXTURE, SIM_PUMP, SIM_GPUWAIT, SIM_DRAWABLE, SIM_SAVESTATE, SIM_COST_COUNT };
+enum SimCost { SIM_DVD, SIM_AX, SIM_JUKEBOX, SIM_EXI, SIM_SNAPSHOT, SIM_QUEUE, SIM_OBSERVE, SIM_RECORD, SIM_RENDER, SIM_TEXTURE, SIM_PUMP, SIM_GPUWAIT, SIM_DRAWABLE, SIM_SAVESTATE, SIM_COST_COUNT };
 void sim_cost_add(int slot, double seconds);
 double last_sim_frame_ms();            // work time of the most recent simulation frame (sleep excluded)
 uint64_t late_frame_count();           // simulation frames that took longer than one 60 Hz period
@@ -160,6 +160,12 @@ uint32_t gcadapter_poll(PadState out[4]);
 struct GcAdapterStatus { uint32_t ports = 0; int interval_ms = 0; double report_hz = 0.0; };   // ports: bit per plugged controller
 bool gcadapter_status(GcAdapterStatus& out);   // false when no adapter is open
 void gcadapter_rumble(int port, bool on);
+// PADRecalibrate support: re-capture the adapter's stick/trigger neutrals (-1 = every port).
+void gcadapter_recalibrate(int port);
+// Rumble routed by game port (the controller that feeds that port, fallback included) or by
+// local player: during an online match the game's ports are match slots, not sockets.
+void input_rumble(int game_port, bool on);
+void input_rumble_local(bool on);
 void gcadapter_shutdown();
 
 // Guest call helpers for HLE code.
