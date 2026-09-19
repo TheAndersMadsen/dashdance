@@ -14,6 +14,7 @@ struct LauncherSettings {
   int online_delay = 2;        // Slippi Online input delay frames (1..9): each frame adds 16.7 ms; 2 is Slippi's default
   int scale = 0;               // internal resolution multiplier, 0 = auto
   int anisotropy = 16;         // 1, 4, 16
+  int upscaler = 0;            // 0 off, 1 MetalFX spatial (balanced), 2 (quality)
   bool vsync = true;           // display sync; off = uncapped presentation
   bool fullscreen = true;
   int volume = 70;             // 0..100

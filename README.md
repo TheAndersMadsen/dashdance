@@ -38,6 +38,7 @@ Games &nbsp;·&nbsp; Free &nbsp;·&nbsp; Open source &nbsp;·&nbsp; For Slippi O
 
 - A new name and an original icon: meet Dashdance.
 - **Ready to compete:** the dashboard checks your setup and tells you what costs you milliseconds.
+- **MetalFX upscaling** (new): render the game at half the internal resolution and let Apple's MetalFX reconstruct the full picture — Off, Balanced, or Quality, in the dashboard, the in-game menu, or `--upscaler`. Where the GPU budget is tight (iPhone, iPad, 4K), it keeps the image crisp at a fraction of the fill rate.
 - Choose your own online input delay, from 1 frame for the lowest latency.
 - Lower latency on iPhone and iPad: the display stays at full refresh while you play.
 - Connect a Controller walks you through Bluetooth pairing.

@@ -15,6 +15,7 @@ struct RuntimeSettings {
   int scale = 0;                 // 0 auto, 1..8
   int anisotropy = 16;           // 1, 4, 16
   float sharpness = 0.0f;        // 0..1
+  int upscaler = 0;              // 0 off, 1 MetalFX spatial (balanced), 2 (quality); Metal only, ignored where unsupported
   bool widescreen = false;       // takes full effect on the next launch (the game's own code table reads it at boot)
   bool vsync = true;
   int volume = 70;               // 0..100

@@ -483,7 +483,7 @@ if(MELEE_BUILD_PORT_METAL)
   # feed it, the login tables name characters and stages, and the HTTP transport
   # is the same Apple one the headless and macOS application binaries link.
   set_source_files_properties(runtime/hle/slippi_http_apple.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
-  target_link_libraries(runtime_metal PUBLIC "-framework Foundation")
+  target_link_libraries(runtime_metal PUBLIC "-framework Foundation" "-framework MetalFX")
   add_dependencies(runtime_metal port_verify_generated)
 
   # Only the Aurora-facing translation units need C++20; the shared runtime stays
@@ -551,7 +551,7 @@ if(MELEE_BUILD_PORT_METAL)
     MELEE_PORT_INPUT_MANIFEST_PATH="${MELEE_PORT_INPUT_MANIFEST}"
     MELEE_PORT_INPUT_MANIFEST_SHA256="${MELEE_PORT_INPUT_MANIFEST_SHA256}")
   target_link_libraries(runtime_mac PUBLIC native_animation port_build_options Threads::Threads port_enet
-    Iconv::Iconv ${PORT_APPLE_UI_FRAMEWORK} "-framework Foundation" "-framework Metal" "-framework QuartzCore" "-framework CoreText" "-framework CoreGraphics" "-framework ImageIO" "-framework Network" "-framework GameController" "-framework UserNotifications" ${PORT_APPLE_UTI_FRAMEWORK}
+    Iconv::Iconv ${PORT_APPLE_UI_FRAMEWORK} "-framework Foundation" "-framework Metal" "-framework MetalFX" "-framework QuartzCore" "-framework CoreText" "-framework CoreGraphics" "-framework ImageIO" "-framework Network" "-framework GameController" "-framework UserNotifications" ${PORT_APPLE_UTI_FRAMEWORK}
     ${AURORA_SDL3_TARGET})
   if(LIBUSB_FOUND AND NOT MELEE_DEVICE_TARGET)
     target_link_libraries(runtime_mac PUBLIC PkgConfig::LIBUSB)

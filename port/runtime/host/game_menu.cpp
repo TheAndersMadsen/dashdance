@@ -26,7 +26,7 @@ constexpr int kEscapeScancode = 41;   // SDL_SCANCODE_ESCAPE
 constexpr int kSkipFrames = 6 * 60;   // remap: a control left untouched for 6 s keeps its binding
 
 enum class Page { Main, Controls, Remap };
-enum MainRow { ROW_SCALE, ROW_ANISO, ROW_SHARPEN, ROW_VSYNC, ROW_WIDESCREEN, ROW_VOLUME, ROW_TOUCH_OPACITY, ROW_TOUCH_SIZE, ROW_FULLSCREEN, ROW_ONLINE_DELAY, ROW_CONTROLS, ROW_HUD, ROW_RESUME, ROW_MAIN_COUNT };
+enum MainRow { ROW_SCALE, ROW_ANISO, ROW_UPSCALE, ROW_SHARPEN, ROW_VSYNC, ROW_WIDESCREEN, ROW_VOLUME, ROW_TOUCH_OPACITY, ROW_TOUCH_SIZE, ROW_FULLSCREEN, ROW_ONLINE_DELAY, ROW_CONTROLS, ROW_HUD, ROW_RESUME, ROW_MAIN_COUNT };
 enum ControlsRow { C_DEVICE, C_REMAP, C_STICK_DZ, C_CSTICK_DZ, C_TRIGGER, C_SWAP, C_RUMBLE, C_TEST_RUMBLE, C_MODIFIER, C_RESET, C_BACK };
 struct Device { std::string guid, name; };   // an empty guid is the keyboard
 
@@ -55,11 +55,19 @@ std::string upper(const std::string& s) { std::string out = ascii(s); for (char&
 int index_of(const std::vector<int>& rows, int row) { for (size_t i = 0; i < rows.size(); ++i) if (rows[i] == row) return (int)i; return 0; }
 
 // ---- main page
+bool apple_graphics() {
+#if defined(__APPLE__)
+  return true;
+#else
+  return false;
+#endif
+}
 std::vector<int> main_rows() {
   std::vector<int> v;
   for (int r = 0; r < ROW_MAIN_COUNT; ++r) {
     if ((r == ROW_TOUCH_OPACITY || r == ROW_TOUCH_SIZE) && !g_touch_visible) continue;
     if ((r == ROW_FULLSCREEN || r == ROW_VSYNC) && g_touch_visible) continue;   // macOS-only controls
+    if (r == ROW_UPSCALE && !apple_graphics()) continue;                       // Metal only
     v.push_back(r);
   }
   return v;
@@ -68,6 +76,7 @@ const char* main_name(int r) {
   switch (r) {
     case ROW_SCALE: return "Internal resolution";
     case ROW_ANISO: return "Anisotropic filtering";
+    case ROW_UPSCALE: return "MetalFX upscaling";
     case ROW_SHARPEN: return "Sharpen";
     case ROW_VSYNC: return "Display sync";
     case ROW_WIDESCREEN: return "Widescreen (next launch)";
@@ -87,6 +96,7 @@ std::string main_value(int r, const RuntimeSettings& s) {
   switch (r) {
     case ROW_SCALE: if (s.scale == 0) return "Auto"; std::snprintf(b, sizeof b, "%dx", s.scale); return b;
     case ROW_ANISO: return s.anisotropy >= 16 ? "16x" : s.anisotropy >= 4 ? "4x" : "Off";
+    case ROW_UPSCALE: return s.upscaler == 2 ? "MetalFX (quality)" : s.upscaler == 1 ? "MetalFX (balanced)" : "Off";
     case ROW_SHARPEN: std::snprintf(b, sizeof b, "%d%%", (int)std::lround(s.sharpness * 100)); return b;
     case ROW_VSYNC: return s.vsync ? "On" : "Off (lowest latency)";
     case ROW_WIDESCREEN: return s.widescreen ? "16:9" : "4:3";
@@ -106,6 +116,7 @@ int main_step(int r, int dir, RuntimeSettings& s) {
   switch (r) {
     case ROW_SCALE: { int i = 0; for (int k = 0; k < 7; ++k) if (scales[k] == s.scale) i = k; i = std::clamp(i + dir, 0, 6); s.scale = scales[i]; return (int)MenuChange::Graphics; }
     case ROW_ANISO: { const int a[] = {1, 4, 16}; int i = s.anisotropy >= 16 ? 2 : s.anisotropy >= 4 ? 1 : 0; i = std::clamp(i + dir, 0, 2); s.anisotropy = a[i]; return (int)MenuChange::Graphics; }
+    case ROW_UPSCALE: s.upscaler = (s.upscaler + 3 + dir) % 3; return (int)MenuChange::Graphics;
     case ROW_SHARPEN: s.sharpness = std::clamp(s.sharpness + 0.1f * dir, 0.0f, 1.0f); return (int)MenuChange::Graphics;
     case ROW_VSYNC: s.vsync = !s.vsync; return (int)MenuChange::Graphics;
     case ROW_WIDESCREEN: s.widescreen = !s.widescreen; return (int)MenuChange::Widescreen;

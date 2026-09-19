@@ -17,6 +17,9 @@ struct MetalOptions {
   float sharpness = 0.0f;    // 0..1 contrast-adaptive sharpening in the present pass
   int anisotropy = 16;
   int ssaa = 1;              // 2 = 4x supersampling
+  int upscaler = 0;          // 0 = off, 1 = MetalFX spatial (balanced), 2 = MetalFX spatial (quality): the EFB
+                             // is rendered at half the window's auto scale and reconstructed to full size at
+                             // present; ignored (plain blit) where MetalFX is unsupported or downscaling
   std::string capture_path;  // write a PPM of the presented EFB region at capture_frame
   uint32_t capture_frame = 0;
   uint32_t capture_every = 0;

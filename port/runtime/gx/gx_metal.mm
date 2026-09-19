@@ -2,6 +2,10 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 #include <TargetConditionals.h>
+#if defined(__APPLE__) && __has_include(<MetalFX/MetalFX.h>)
+#define MELEE_HAS_METALFX 1
+#import <MetalFX/MetalFX.h>
+#endif
 #include "gx_metal.h"
 #include "gx_msl.h"
 #include "gx_regs.h"
@@ -181,7 +185,7 @@ class MetalBackend final : public Backend {
     if (opts_.efb_scale == 0 && pick_scale() != scale_) { efb_copies_.clear(); create_efb(); }
   }
   void set_options(const MetalOptions& o) {
-    const bool rescale = o.efb_scale != opts_.efb_scale || o.ssaa != opts_.ssaa || o.widescreen != opts_.widescreen;
+    const bool rescale = o.efb_scale != opts_.efb_scale || o.ssaa != opts_.ssaa || o.widescreen != opts_.widescreen || o.upscaler != opts_.upscaler;
     const bool resample = o.anisotropy != opts_.anisotropy;
     opts_ = o;
 #if TARGET_OS_OSX
@@ -207,6 +211,7 @@ class MetalBackend final : public Backend {
 #if TARGET_OS_OSX
     layer_.displaySyncEnabled = opts_.vsync;
 #endif
+    init_fx_support();
     // Double-buffered swapchain: the simulation runs at 60 Hz and a finished frame should reach
     // the next refresh slot (120 Hz on ProMotion) instead of queueing behind another drawable.
     layer_.maximumDrawableCount = 2;
@@ -278,6 +283,7 @@ class MetalBackend final : public Backend {
   }
 
   float output_aspect() const { return opts_.widescreen ? 16.0f / 9.0f : 4.0f / 3.0f; }
+  bool fx_wanted() const { return opts_.upscaler > 0 && fx_supported_; }
   int pick_scale() const {
     constexpr int max_scale = 16384 / EFB_WIDTH;
     const int ssaa = std::clamp(opts_.ssaa, 1, 2);
@@ -289,6 +295,7 @@ class MetalBackend final : public Backend {
     float aspect = output_aspect();
     float vw = ww, vh = ww / aspect;
     if (vh > wh) { vh = wh; vw = wh * aspect; }
+    if (fx_wanted()) { vw *= 0.5f; vh *= 0.5f; }   // MetalFX reconstructs to the window size at present
     int s = std::max((int)std::ceil(vw / (480.0f * aspect)), (int)std::ceil(vh / 480.0f));
     return std::clamp(std::min(s, cap) * ssaa, 1, max_scale);
   }
@@ -306,6 +313,99 @@ class MetalBackend final : public Backend {
     efb_depth_ = [device_ newTextureWithDescriptor:dd];
     efb_needs_clear_ = true;
     host::log("metal: internal resolution %dx%d (EFB x%d, drawable %dx%d)", efb_w_, efb_h_, scale_, client_w_, client_h_);
+  }
+
+  // MetalFX spatial upscaling (option 1/2): the EFB copy is blitted at its internal
+  // resolution into the scaler's input, reconstructed to the presented content size,
+  // and composited 1:1. Only an upscale is valid; anything else falls back to the
+  // plain blit. Quality 1 = balanced, 2 = quality (the scaler's two presets).
+  void init_fx_support() {
+#if defined(MELEE_HAS_METALFX)
+    if (@available(macOS 13.0, iOS 16.0, *))
+      fx_supported_ = [MTLFXSpatialScalerDescriptor supportsDevice:device_];
+#endif
+    if (opts_.upscaler && !fx_supported_) host::log("metal: MetalFX unavailable on this GPU; upscaler off");
+  }
+
+  bool fx_rebuild(uint32_t in_w, uint32_t in_h, uint32_t out_w, uint32_t out_h) {
+    const int quality = std::clamp(opts_.upscaler, 1, 2);
+    if (fx_scaler_ && quality == fx_quality_ && in_w == fx_in_w_ && in_h == fx_in_h_ && out_w == fx_out_w_ && out_h == fx_out_h_) return true;
+#if !defined(MELEE_HAS_METALFX)
+    (void)quality;
+    return false;
+#else
+    if (!(@available(macOS 13.0, iOS 16.0, *))) return false;
+    @try {
+      MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:in_w height:in_h mipmapped:NO];
+      td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+      td.storageMode = MTLStorageModePrivate;
+      fx_in_ = [device_ newTextureWithDescriptor:td];
+      MTLTextureDescriptor* od = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:out_w height:out_h mipmapped:NO];
+      od.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead;
+      od.storageMode = MTLStorageModePrivate;
+      fx_out_ = [device_ newTextureWithDescriptor:od];
+      MTLFXSpatialScalerDescriptor* d = [MTLFXSpatialScalerDescriptor new];
+      d.inputWidth = in_w; d.inputHeight = in_h;
+      d.outputWidth = out_w; d.outputHeight = out_h;
+      d.colorTextureFormat = MTLPixelFormatBGRA8Unorm;
+      d.outputTextureFormat = MTLPixelFormatBGRA8Unorm;
+      // Quality presets (0 balanced / 1 quality) shipped with the macOS 13 API and were
+      // dropped from later SDKs: apply the value when the OS still accepts it.
+      @try { [d setValue:@(quality - 1) forKey:@"scalerQuality"]; } @catch (NSException*) {}
+      id<MTLFXSpatialScaler> scaler = [d newSpatialScalerWithDevice:device_];
+      if (!scaler) {
+        if (!fx_reported_) { fx_reported_ = true; host::log("metal: MetalFX scaler unavailable; upscaler off"); }
+        fx_supported_ = false; fx_scaler_ = nil;
+        return false;
+      }
+      fx_scaler_ = scaler;
+      fx_in_w_ = in_w; fx_in_h_ = in_h; fx_out_w_ = out_w; fx_out_h_ = out_h; fx_quality_ = quality;
+      return true;
+    } @catch (NSException*) {
+      if (!fx_reported_) { fx_reported_ = true; host::log("metal: MetalFX scaler creation failed; upscaler off"); }
+      fx_supported_ = false; fx_scaler_ = nil;
+      return false;
+    }
+#endif
+  }
+
+  // Opens and closes the MetalFX input pass and encodes the scaler, when the option is
+  // active and the geometry allows an upscale. Returns false to use the plain blit.
+  bool fx_present(const EfbCopy& c, const host::GameRect& gr) {
+    if (!fx_wanted() || !c.src_w || !c.src_h) return false;
+    const uint32_t in_w = c.src_w * scale_, in_h = c.src_h * scale_;
+    const uint32_t out_w = (uint32_t)std::lround(gr.w), out_h = (uint32_t)std::lround(gr.h);
+    if (!in_w || !in_h || !out_w || !out_h) return false;
+    if (in_w > out_w || in_h > out_h) {   // the EFB already exceeds the window: a plain downsample beats the scaler
+      if (!fx_reported_) { fx_reported_ = true; host::log("metal: EFB %ux%u exceeds the %ux%u content; upscaler idle", in_w, in_h, out_w, out_h); }
+      return false;
+    }
+    if (!fx_rebuild(in_w, in_h, out_w, out_h)) return false;
+    MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
+    rp.colorAttachments[0].texture = fx_in_;
+    rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> enc = [command_ renderCommandEncoderWithDescriptor:rp];
+    BlitConstants bc{{(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT},
+                     {1.0f / std::max((float)efb_w_, 1.0f), 1.0f / std::max((float)efb_h_, 1.0f), 0.0f, 0.0f},
+                     {1, 1, 0, 0}};
+    bc.box[0] = 1; bc.box[1] = 1;   // no downsampling: the scaler wants the full detail
+    [enc setRenderPipelineState:blit_present_];
+    [enc setViewport:MTLViewport{0, 0, (double)in_w, (double)in_h, 0, 1}];
+    [enc setVertexBytes:&bc length:sizeof bc atIndex:0];
+    [enc setFragmentBytes:&bc length:sizeof bc atIndex:0];
+    [enc setFragmentTexture:efb_color_ atIndex:0];
+    [enc setFragmentSamplerState:blit_sampler_ atIndex:0];
+    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [enc endEncoding];
+#if defined(MELEE_HAS_METALFX)
+    fx_scaler_.colorTexture = fx_in_;
+    fx_scaler_.inputContentWidth = fx_in_w_;
+    fx_scaler_.inputContentHeight = fx_in_h_;
+    fx_scaler_.outputTexture = fx_out_;
+    [fx_scaler_ encodeToCommandBuffer:command_];
+#endif
+    return true;
   }
 
   void wait_idle() {
@@ -803,31 +903,38 @@ class MetalBackend final : public Backend {
     id<CAMetalDrawable> drawable = drawable_;
     if (!drawable) { host::SimCostScope wait_cost(host::SIM_DRAWABLE); drawable = [layer_ nextDrawable]; }   // blocks while the display still holds both drawables
     if (!drawable) return false;
+    const float ww = (float)drawable.texture.width, wh = (float)drawable.texture.height;
+    const float aspect = output_aspect();
+    const host::GameRect gr = host::window_game_rect(ww, wh, aspect);   // shared with the touch layout and the letterbox artwork
+    const float vw = gr.w, vh = gr.h;
+    const bool fx = fx_present(c, gr);   // MetalFX reconstructs into fx_out_ before this pass
     MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
     rp.colorAttachments[0].texture = drawable.texture;
     rp.colorAttachments[0].loadAction = again ? MTLLoadActionLoad : MTLLoadActionClear;
     rp.colorAttachments[0].clearColor = MTLClearColorMake(0.05, 0.05, 0.15, 1);
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> enc = [command_ renderCommandEncoderWithDescriptor:rp];
-    const float ww = (float)drawable.texture.width, wh = (float)drawable.texture.height;
-    const float aspect = output_aspect();
-    const host::GameRect gr = host::window_game_rect(ww, wh, aspect);   // shared with the touch layout and the letterbox artwork
-    const float vw = gr.w, vh = gr.h;
     [enc setViewport:MTLViewport{gr.x, gr.y, vw, vh, 0, 1}];
     BlitConstants bc{{(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT},
                      {1.0f / std::max((float)efb_w_, 1.0f), 1.0f / std::max((float)efb_h_, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), 0.0f},
                      {1, 1, 0, 0}};
-    bc.box[0] = (float)std::clamp((int)std::lround((double)c.src_w * scale_ / std::max(vw, 1.0f)), 1, 4);
-    bc.box[1] = (float)std::clamp((int)std::lround((double)c.src_h * scale_ / std::max(vh, 1.0f)), 1, 4);
+    if (fx) {
+      // Composite the reconstructed content 1:1 (the scaler owns the sharpening).
+      bc = {{1, 1, 0, 0}, {1.0f / fx_out_w_, 1.0f / fx_out_h_, 0.0f, 0.0f}, {1, 1, 0, 0}};
+    } else {
+      bc.box[0] = (float)std::clamp((int)std::lround((double)c.src_w * scale_ / std::max(vw, 1.0f)), 1, 4);
+      bc.box[1] = (float)std::clamp((int)std::lround((double)c.src_h * scale_ / std::max(vh, 1.0f)), 1, 4);
+    }
     [enc setRenderPipelineState:blit_present_];
     [enc setVertexBytes:&bc length:sizeof bc atIndex:0];
     [enc setFragmentBytes:&bc length:sizeof bc atIndex:0];
-    [enc setFragmentTexture:efb_color_ atIndex:0];
+    [enc setFragmentTexture:(fx ? fx_out_ : efb_color_) atIndex:0];
     [enc setFragmentSamplerState:blit_sampler_ atIndex:0];
     [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     draw_overlay(enc, ww, wh);
     [enc endEncoding];
     drawable_ = drawable;
+    fx_presented_ = fx;
     last_present_ = c;
     return true;
   }
@@ -1025,6 +1132,7 @@ class MetalBackend final : public Backend {
       vertex_ring_[slot_].used = index_ring_[slot_].used = constant_ring_[slot_].used = 0;
       ring_full_logged_ = false;
       draws_this_frame_ = 0;
+      fx_presented_ = false;
       if (async_compile_) drain_ready();
       command_ = [queue_ commandBuffer];
       drawable_ = nil;
@@ -1044,20 +1152,31 @@ class MetalBackend final : public Backend {
             if (!opts_.capture_path.empty() && !capture_staging_) {
               const uint64_t n = frame_counter_ + 1;   // executed frames: deterministic and 1:1 with retraces
               const bool wanted = (opts_.capture_frame && n == opts_.capture_frame) || (opts_.capture_every && n % opts_.capture_every == 0);
-              const uint32_t x = std::min<uint32_t>(c.src_x * scale_, efb_w_), y = std::min<uint32_t>(c.src_y * scale_, efb_h_);
-              const uint32_t w = std::min<uint32_t>(c.src_w * scale_, efb_w_ - x), h = std::min<uint32_t>(c.src_h * scale_, efb_h_ - y);
-              if (wanted && w && h && command_) {
+              if (wanted && command_) {
                   end_pass();   // a lazily-opened draw pass must close first (drain mode never presents)
-                MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:w height:h mipmapped:NO];
-                td.storageMode = MTLStorageModeShared;
-                capture_staging_ = [device_ newTextureWithDescriptor:td];
-                capture_path_pending_ = opts_.capture_path;
-                capture_x_ = x; capture_y_ = y; capture_w_ = w; capture_h_ = h;
-                capture_cmd_ = command_;
-                id<MTLBlitCommandEncoder> blit = [command_ blitCommandEncoder];
-                [blit copyFromTexture:efb_color_ sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(x, y, 0) sourceSize:MTLSizeMake(w, h, 1)
-                            toTexture:capture_staging_ destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
-                [blit endEncoding];
+                capture_bgra_ = false;
+                uint32_t x = 0, y = 0, w = 0, h = 0;
+                id<MTLTexture> source = nil;
+                if (fx_presented_ && fx_out_) {   // capture the presented, upscaled content
+                  capture_bgra_ = true;
+                  source = fx_out_; w = fx_out_w_; h = fx_out_h_;
+                } else {
+                  x = std::min<uint32_t>(c.src_x * scale_, efb_w_); y = std::min<uint32_t>(c.src_y * scale_, efb_h_);
+                  w = std::min<uint32_t>(c.src_w * scale_, efb_w_ - x); h = std::min<uint32_t>(c.src_h * scale_, efb_h_ - y);
+                  source = efb_color_;
+                }
+                if (w && h) {
+                  capture_w_ = w; capture_h_ = h;
+                  MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:(capture_bgra_ ? MTLPixelFormatBGRA8Unorm : MTLPixelFormatRGBA8Unorm) width:w height:h mipmapped:NO];
+                  td.storageMode = MTLStorageModeShared;
+                  capture_staging_ = [device_ newTextureWithDescriptor:td];
+                  capture_path_pending_ = opts_.capture_path;
+                  capture_cmd_ = command_;
+                  id<MTLBlitCommandEncoder> blit = [command_ blitCommandEncoder];
+                  [blit copyFromTexture:source sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(x, y, 0) sourceSize:MTLSizeMake(w, h, 1)
+                              toTexture:capture_staging_ destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+                  [blit endEncoding];
+                }
               }
             }
           }
@@ -1102,6 +1221,8 @@ class MetalBackend final : public Backend {
         }
         std::vector<uint8_t> pixels((size_t)capture_w_ * capture_h_ * 4);
         [capture_staging_ getBytes:pixels.data() bytesPerRow:capture_w_ * 4 fromRegion:MTLRegionMake2D(0, 0, capture_w_, capture_h_) mipmapLevel:0];
+        if (capture_bgra_)
+          for (size_t i = 0; i < pixels.size(); i += 4) std::swap(pixels[i], pixels[i + 2]);   // BGRA -> RGB order
         std::ofstream f(path, std::ios::binary);
         f << "P6\n" << capture_w_ << ' ' << capture_h_ << "\n255\n";
         for (size_t i = 0; i < (size_t)capture_w_ * capture_h_; ++i) f.write((const char*)&pixels[i * 4], 3);
@@ -1190,6 +1311,15 @@ class MetalBackend final : public Backend {
   id<MTLDepthStencilState> clear_depth_state_ = nil;
   id<MTLSamplerState> blit_sampler_ = nil;
   id<MTLTexture> efb_color_ = nil, efb_depth_ = nil, white_ = nil;
+#if defined(MELEE_HAS_METALFX)
+  id<MTLFXSpatialScaler> fx_scaler_ = nil;   // macOS 13 / iOS 16 spatial upscaler (FSR-class)
+#else
+  void* fx_scaler_ = nullptr;
+#endif
+  id<MTLTexture> fx_in_ = nil, fx_out_ = nil;
+  uint32_t fx_in_w_ = 0, fx_in_h_ = 0, fx_out_w_ = 0, fx_out_h_ = 0;
+  int fx_quality_ = -1;
+  bool fx_supported_ = false, fx_reported_ = false;
   bool efb_needs_clear_ = true, skip_present_ = false, ring_full_logged_ = false, pending_capture_ = false;
   int scale_ = 1, efb_w_ = EFB_WIDTH, efb_h_ = EFB_HEIGHT, slot_ = 0;
   uint64_t frame_counter_ = 0, frames_presented_ = 0, backend_id_ = (uint64_t)(uintptr_t)this;
@@ -1212,7 +1342,8 @@ class MetalBackend final : public Backend {
   id<MTLTexture> capture_staging_ = nil;
   id<MTLCommandBuffer> capture_cmd_ = nil;
   std::string capture_path_pending_;
-  uint32_t capture_x_ = 0, capture_y_ = 0, capture_w_ = 0, capture_h_ = 0;
+  uint32_t capture_w_ = 0, capture_h_ = 0;
+  bool capture_bgra_ = false, fx_presented_ = false;
   std::unordered_map<PsoKey, id<MTLRenderPipelineState>, PsoKeyHash> pipelines_;
   std::unordered_map<uint64_t, id<MTLFunction>> vs_functions_, ps_functions_;
   std::unordered_map<uint32_t, id<MTLDepthStencilState>> depth_states_;

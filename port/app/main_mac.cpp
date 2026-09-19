@@ -57,6 +57,7 @@ void usage() {
       "  --scale N|auto           internal resolution multiplier (default auto)\n"
       "  --widescreen             Slippi 16:9 code and 16:9 presentation\n"
       "  --sharpness 0..1         contrast-adaptive sharpening\n"
+      "  --upscaler 0|1|2         MetalFX spatial upscaling: 0 off, 1 balanced, 2 quality (renders at half the auto internal resolution)\n"
       "  --touch-overlay          show the on-screen controller (default on touch devices)\n"
       "  --overlay-opacity 0..1   on-screen controller opacity\n"
       "  --anisotropy 1..16       anisotropic filtering (default 16)\n"
@@ -137,7 +138,7 @@ static void save_launcher_ini(const fs::path& path, const host::LauncherSettings
   std::ofstream out(path, std::ios::trunc);
   out << "iso=" << settings.iso << "\nwidescreen=" << (settings.widescreen ? 1 : 0) << "\nonline=" << (settings.online ? 1 : 0)
       << "\nsharpness=" << settings.sharpness << "\noverlay=" << settings.overlay_opacity << "\noverlay_scale=" << settings.overlay_scale
-      << "\nscale=" << settings.scale << "\nanisotropy=" << settings.anisotropy << "\nvsync=" << (settings.vsync ? 1 : 0)
+      << "\nscale=" << settings.scale << "\nanisotropy=" << settings.anisotropy << "\nupscaler=" << settings.upscaler << "\nvsync=" << (settings.vsync ? 1 : 0)
       << "\nfullscreen=" << (settings.fullscreen ? 1 : 0) << "\nvolume=" << settings.volume << "\nhud=" << (settings.hud ? 1 : 0)
       << "\nonline_delay=" << settings.online_delay << "\ndiscord=" << (settings.discord_enabled ? 1 : 0) << "\ndiscord_rank=" << (settings.discord_show_rank ? 1 : 0) << "\n";
   for (const host::ControllerConfig& c : host::controller_configs()) out << "controller." << c.guid << "=" << c.port << "|" << c.map.serialize() << "\n";
@@ -174,7 +175,9 @@ int main(int argc, char** argv) {
   std::string script, iso_arg, user_dir, sys_dir, replay_dir, card_dir, profile_dir, cache_dir, log_file;
   bool offline = false, choose_disc = false, fullscreen_arg = false, delay_arg = false;
   bool hidden = false;
+  bool expect_scene = false; uint16_t expected_scene = 0;
   float overlay_opacity_arg = -1.0f, sharpness_arg = -1.0f;
+  int upscaler_arg = -1;
   bool widescreen_arg = false, window_arg = false;
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
@@ -190,6 +193,7 @@ int main(int argc, char** argv) {
     else if (a == "--scale") { std::string v = next(); gfx.efb_scale = v == "auto" ? 0 : std::atoi(v.c_str()); if (v != "auto" && gfx.efb_scale < 1) { usage(); return 2; } }
     else if (a == "--widescreen") widescreen_arg = true;
     else if (a == "--sharpness") sharpness_arg = std::clamp((float)std::atof(next()), 0.0f, 1.0f);
+    else if (a == "--upscaler") upscaler_arg = std::clamp(std::atoi(next()), 0, 2);
     else if (a == "--touch-overlay") host::touch_force_visible(true);
     else if (a == "--overlay-opacity") { overlay_opacity_arg = std::clamp((float)std::atof(next()), 0.0f, 1.0f); }
     else if (a == "--anisotropy") gfx.anisotropy = std::clamp(std::atoi(next()), 1, 16);
@@ -221,6 +225,7 @@ int main(int argc, char** argv) {
     else if (a == "--time-base") { o.time_base = std::strtoull(next(), nullptr, 0); o.time_base_set = true; }
     else if (a == "--strict-aot") allow_interpreter = false;
     else if (a == "--allow-interpreter") allow_interpreter = true;
+    else if (a == "--expect-scene") { expect_scene = true; expected_scene = (uint16_t)std::strtoul(next(), nullptr, 0); }
     else if (a == "--audio-dump") o.audio_dump = next();
     else if (a == "--trace-calls") o.trace_calls = true;
     else if (a == "--quiet") o.quiet = true;
@@ -254,6 +259,7 @@ int main(int argc, char** argv) {
       else if (const char* v = value("overlay_scale=")) settings.overlay_scale = std::clamp((float)std::atof(v), 0.7f, 1.4f);
       else if (const char* v = value("scale=")) settings.scale = std::clamp(std::atoi(v), 0, 8);
       else if (const char* v = value("anisotropy=")) settings.anisotropy = std::clamp(std::atoi(v), 1, 16);
+      else if (const char* v = value("upscaler=")) settings.upscaler = std::clamp(std::atoi(v), 0, 2);
       else if (const char* v = value("vsync=")) settings.vsync = *v != '0';
       else if (const char* v = value("fullscreen=")) settings.fullscreen = *v == '1';
       else if (const char* v = value("volume=")) settings.volume = std::clamp(std::atoi(v), 0, 100);
@@ -310,6 +316,7 @@ int main(int argc, char** argv) {
   // letterbox the widescreen picture top and bottom, which is what widescreen removes.
   if (!window_arg && gfx.widescreen) { window_w = 1280; window_h = 720; }
   gfx.sharpness = sharpness_arg >= 0.0f ? sharpness_arg : settings.sharpness;
+  gfx.upscaler = upscaler_arg >= 0 ? upscaler_arg : settings.upscaler;
   if (show_launcher) { gfx.efb_scale = settings.scale; gfx.anisotropy = settings.anisotropy; gfx.vsync = settings.vsync; if (!volume_arg) volume = settings.volume; }
   if (!delay_arg) online.delay = std::clamp(settings.online_delay, 1, 9);   // the player's choice; each frame of delay adds 16.7 ms
   host::log("slippi: online input delay %d frame%s (%.1f ms)", online.delay, online.delay == 1 ? "" : "s", online.delay * 16.667);
@@ -380,12 +387,12 @@ int main(int argc, char** argv) {
     gx::metal_set_overlay(backend, host::game_overlay);
     {
       host::RuntimeSettings rs;
-      rs.scale = gfx.efb_scale; rs.anisotropy = gfx.anisotropy; rs.sharpness = gfx.sharpness; rs.widescreen = gfx.widescreen; rs.vsync = gfx.vsync;
+      rs.scale = gfx.efb_scale; rs.anisotropy = gfx.anisotropy; rs.sharpness = gfx.sharpness; rs.upscaler = gfx.upscaler; rs.widescreen = gfx.widescreen; rs.vsync = gfx.vsync;
       rs.volume = std::clamp(volume, 0, 100); rs.overlay_opacity = settings.overlay_opacity; rs.overlay_scale = settings.overlay_scale;
       rs.hud = settings.hud; rs.fullscreen = settings.fullscreen || fullscreen_arg; rs.online_delay = online.delay;
       host::menu_init(rs, [backend, &gfx](const host::RuntimeSettings& s, host::MenuChange what) {
         switch (what) {
-          case host::MenuChange::Graphics: gfx.efb_scale = s.scale; gfx.anisotropy = s.anisotropy; gfx.sharpness = s.sharpness; gfx.vsync = s.vsync; gx::metal_set_options(backend, gfx); break;
+          case host::MenuChange::Graphics: gfx.efb_scale = s.scale; gfx.anisotropy = s.anisotropy; gfx.sharpness = s.sharpness; gfx.upscaler = s.upscaler; gfx.vsync = s.vsync; gx::metal_set_options(backend, gfx); break;
           case host::MenuChange::Volume: host::audio_set_volume(s.volume); break;
           case host::MenuChange::TouchControls: host::touch_set_opacity(s.overlay_opacity); host::touch_set_scale(s.overlay_scale); break;
           case host::MenuChange::Fullscreen: host::window_set_fullscreen(s.fullscreen); break;
@@ -448,7 +455,7 @@ int main(int argc, char** argv) {
   }
   if (host::menu_changed() && !std::getenv("MELEE_PAD_FILE") && !std::getenv("MELEE_MENU_OPEN")) {   // remembered, except for scripted test runs
     const host::RuntimeSettings rs = host::menu_settings();
-    settings.scale = rs.scale; settings.anisotropy = rs.anisotropy; settings.sharpness = rs.sharpness; settings.widescreen = rs.widescreen; settings.vsync = rs.vsync;
+    settings.scale = rs.scale; settings.anisotropy = rs.anisotropy; settings.sharpness = rs.sharpness; settings.upscaler = rs.upscaler; settings.widescreen = rs.widescreen; settings.vsync = rs.vsync;
     settings.volume = rs.volume; settings.overlay_opacity = rs.overlay_opacity; settings.overlay_scale = rs.overlay_scale; settings.hud = rs.hud; settings.fullscreen = rs.fullscreen;
     if (!delay_arg) settings.online_delay = rs.online_delay;   // a one-off --online-delay is not saved as the player's setting
     if (settings.iso.empty()) settings.iso = iso_arg;
@@ -461,6 +468,10 @@ int main(int argc, char** argv) {
     if (calls) host::log("interpreter: %llu calls into RAM-resident code, %llu instructions", (unsigned long long)calls, (unsigned long long)insns); }
   host::log("slippi: %llu EXI commands, %llu replays written, GCT at %08X", (unsigned long long)slippi::commands_seen(),
             (unsigned long long)slippi::replays_written(), slippi::gct_load_address());
+  if (!code && expect_scene && !host::scene_trace_snapshot().saw(expected_scene)) {
+    host::log("required scene 0x%04X was not observed (state byte high, mode byte low)", expected_scene);
+    code = 5;
+  }
   host::log("result: exit=%d retraces=%u", code, host::retrace_count());
   host::close_log_file();
   return code;

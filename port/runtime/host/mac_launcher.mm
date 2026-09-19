@@ -327,7 +327,7 @@ API_AVAILABLE(macos(26.0))
 @property(nonatomic) NSStackView* readinessStack; @property(nonatomic) std::string readinessSignature; @property(nonatomic) NSStackView* controllersStack; @property(nonatomic) NSUInteger controllerCount; @property(nonatomic) std::string controllerSignature; @property(nonatomic) unsigned tickCount; @property(nonatomic, copy) NSString* remapGuid; @property(nonatomic) int capturing; @property(nonatomic) BOOL armed; @property(nonatomic) NSArray<NSButton*>* remapButtons;
 // display
 @property(nonatomic) NSSwitch* discordSwitch; @property(nonatomic) NSSwitch* discordRankSwitch; @property(nonatomic) NSTextField* regionLabel;
-@property(nonatomic) NSSegmentedControl* scaleControl; @property(nonatomic) NSSegmentedControl* anisoControl; @property(nonatomic) NSSwitch* vsyncSwitch; @property(nonatomic) NSSwitch* fullscreenSwitch; @property(nonatomic) NSSwitch* widescreenSwitch; @property(nonatomic) NSSlider* sharpness; @property(nonatomic) NSSwitch* onlineSwitch; @property(nonatomic) NSSegmentedControl* delayControl;
+@property(nonatomic) NSSegmentedControl* scaleControl; @property(nonatomic) NSSegmentedControl* anisoControl; @property(nonatomic) NSSegmentedControl* upscalerControl; @property(nonatomic) NSSwitch* vsyncSwitch; @property(nonatomic) NSSwitch* fullscreenSwitch; @property(nonatomic) NSSwitch* widescreenSwitch; @property(nonatomic) NSSlider* sharpness; @property(nonatomic) NSSwitch* onlineSwitch; @property(nonatomic) NSSegmentedControl* delayControl;
 - (void)acceptDroppedDisc:(NSString*)path;
 - (void)openEditor:(MUControllerEditor*)editor;
 - (void)play;
@@ -1177,6 +1177,8 @@ static NSButton* pairing_button(NSString* title, NSString* sym, id target, SEL a
   [s addArrangedSubview:[self row:@"Internal resolution" symbol:@"square.resize" control:self.scaleControl]];
   self.anisoControl = [self segments:@[@"Off", @"4×", @"16×"] selected:self.settings->anisotropy >= 16 ? 2 : self.settings->anisotropy >= 4 ? 1 : 0];
   [s addArrangedSubview:[self row:@"Anisotropic filtering" symbol:@"square.stack.3d.up" control:self.anisoControl]];
+  self.upscalerControl = [self segments:@[@"Off", @"MetalFX", @"MetalFX+"] selected:MAX(0, MIN(2, self.settings->upscaler))];
+  [s addArrangedSubview:[self row:@"MetalFX upscaling (renders at half resolution, reconstructs)" symbol:@"wand.and.rays" control:self.upscalerControl]];
   self.vsyncSwitch = [self toggle:self.settings->vsync];
   [s addArrangedSubview:[self row:@"Display sync (off = lowest latency, may tear)" symbol:@"waveform.path" control:self.vsyncSwitch]];
   self.fullscreenSwitch = [self toggle:self.settings->fullscreen];
@@ -1479,6 +1481,7 @@ static NSButton* pairing_button(NSString* title, NSString* sym, id target, SEL a
   const int scales[] = {0, 1, 2, 3, 4, 6, 8};
   self.settings->scale = scales[MAX(0, MIN(6, self.scaleControl.selectedSegment))];
   self.settings->anisotropy = self.anisoControl.selectedSegment == 2 ? 16 : self.anisoControl.selectedSegment == 1 ? 4 : 1;
+  self.settings->upscaler = (int)MAX(0, MIN(2, self.upscalerControl.selectedSegment));
   self.settings->vsync = self.vsyncSwitch.state == NSControlStateValueOn;
   self.settings->fullscreen = self.fullscreenSwitch.state == NSControlStateValueOn;
   self.settings->widescreen = self.widescreenSwitch.state == NSControlStateValueOn;

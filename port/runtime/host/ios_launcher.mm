@@ -645,7 +645,7 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
 @property(nonatomic) UIStackView* readinessStack; @property(nonatomic) std::string readinessSignature; @property(nonatomic) UIStackView* controllersStack; @property(nonatomic) NSTimer* controllerTimer; @property(nonatomic) NSUInteger controllerCount; @property(nonatomic) std::string controllerSignature;
 // display
 @property(nonatomic) UILabel* regionLabel;
-@property(nonatomic) UISegmentedControl* scaleControl; @property(nonatomic) UISegmentedControl* anisoControl; @property(nonatomic) UISwitch* vsyncSwitch; @property(nonatomic) UISwitch* widescreenSwitch; @property(nonatomic) UISlider* sharpnessSlider; @property(nonatomic) UISwitch* onlineSwitch; @property(nonatomic) UISegmentedControl* delayControl;
+@property(nonatomic) UISegmentedControl* scaleControl; @property(nonatomic) UISegmentedControl* anisoControl; @property(nonatomic) UISegmentedControl* upscalerControl; @property(nonatomic) UISwitch* vsyncSwitch; @property(nonatomic) UISwitch* widescreenSwitch; @property(nonatomic) UISlider* sharpnessSlider; @property(nonatomic) UISwitch* onlineSwitch; @property(nonatomic) UISegmentedControl* delayControl;
 @property(nonatomic) UISlider* overlaySlider; @property(nonatomic) UISlider* overlayScaleSlider;
 @property(nonatomic) UIButton* playButton;
 @end
@@ -1149,6 +1149,8 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
   [s addArrangedSubview:self.scaleControl];
   self.anisoControl = [self segments:@[@"Off", @"4×", @"16×"] selected:self.settings->anisotropy >= 16 ? 2 : self.settings->anisotropy >= 4 ? 1 : 0];
   [s addArrangedSubview:[self row:@"Anisotropic filtering" symbol:@"square.stack.3d.up" control:self.anisoControl]];
+  self.upscalerControl = [self segments:@[@"Off", @"MetalFX", @"MetalFX+"] selected:MAX(0, MIN(2, self.settings->upscaler))];
+  [s addArrangedSubview:[self row:@"MetalFX upscaling (renders at half resolution, reconstructs)" symbol:@"wand.and.rays" control:self.upscalerControl]];
   self.vsyncSwitch = [[UISwitch alloc] init]; self.vsyncSwitch.on = self.settings->vsync; self.vsyncSwitch.onTintColor = kYellow();
   [s addArrangedSubview:[self row:@"Display sync (off = lowest latency, may tear)" symbol:@"waveform.path" control:self.vsyncSwitch]];
   self.widescreenSwitch = [[UISwitch alloc] init]; self.widescreenSwitch.on = self.settings->widescreen; self.widescreenSwitch.onTintColor = kYellow();
@@ -1467,6 +1469,7 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
   const int scales[] = {0, 1, 2, 3, 4, 6, 8};
   self.settings->scale = scales[MAX(0, MIN(6, self.scaleControl.selectedSegmentIndex))];
   self.settings->anisotropy = self.anisoControl.selectedSegmentIndex == 2 ? 16 : self.anisoControl.selectedSegmentIndex == 1 ? 4 : 1;
+  self.settings->upscaler = (int)MAX(0, MIN(2, self.upscalerControl.selectedSegmentIndex));
   self.settings->vsync = self.vsyncSwitch.on;
   self.settings->widescreen = self.widescreenSwitch.on;
   self.settings->online = self.onlineSwitch.on;
