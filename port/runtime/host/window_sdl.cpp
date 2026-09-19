@@ -29,6 +29,11 @@
 
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 bool window_fold_division_apple(void* uiwindow, float pixels_per_point, float* out);   // window_fold_apple.mm
+// Syncs the SDL Metal view to its window (iPhone Duo rotations) and reports UIKit-truth geometry:
+// pixels, points, then the four safe insets, all in pixels. See window_fold_apple.mm.
+bool window_sync_apple(void* uiwindow, float* out);
+bool window_request_orientation_apple(void* uiwindow, const char* orientation);
+#include <dispatch/dispatch.h>
 #endif
 
 namespace host {
@@ -282,14 +287,33 @@ void refresh_client_size() {
   SDL_GetWindowSizeInPixels(g_window, &w, &h);
   int pw = 0, ph = 0;
   SDL_GetWindowSize(g_window, &pw, &ph);
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+  // The inner display of a folding iPhone rotates whether the app likes it or not, and SDL's
+  // bookkeeping can trail that rotation (stale view frame, stale safe areas). The UIKit truth
+  // wins when it is available: it also re-pins the Metal view to its window, which is the fix.
+  float ui[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+  SDL_PropertiesID ui_props = SDL_GetWindowProperties(g_window);
+  void* uiwindow = SDL_GetPointerProperty(ui_props, SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, nullptr);
+  const bool window_sync_apple_was_used = uiwindow && window_sync_apple(uiwindow, ui);
+  if (window_sync_apple_was_used) {
+    w = (int)ui[0]; h = (int)ui[1]; pw = (int)ui[2]; ph = (int)ui[3];
+  }
+#endif
   std::lock_guard<std::mutex> lock(g_touch_mutex);   // the touch layout reads these from other threads
   g_client_w = std::max(w, 1); g_client_h = std::max(h, 1);
   g_pixels_per_point = pw > 0 ? (float)g_client_w / (float)pw : 1.0f;
-  SDL_Rect safe{};
   float top = 0, left = 0, right = 0, bottom = 0;
-  if (SDL_GetWindowSafeArea(g_window, &safe) && safe.w > 0 && safe.h > 0) {
-    top = std::max(safe.y, 0) * g_pixels_per_point; left = std::max(safe.x, 0) * g_pixels_per_point;
-    right = std::max(pw - safe.x - safe.w, 0) * g_pixels_per_point; bottom = std::max(ph - safe.y - safe.h, 0) * g_pixels_per_point;
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+  if (uiwindow && window_sync_apple_was_used) {
+    top = ui[4]; left = ui[5]; right = ui[6]; bottom = ui[7];
+  } else
+#endif
+  {
+    SDL_Rect safe{};
+    if (SDL_GetWindowSafeArea(g_window, &safe) && safe.w > 0 && safe.h > 0) {
+      top = std::max(safe.y, 0) * g_pixels_per_point; left = std::max(safe.x, 0) * g_pixels_per_point;
+      right = std::max(pw - safe.x - safe.w, 0) * g_pixels_per_point; bottom = std::max(ph - safe.y - safe.h, 0) * g_pixels_per_point;
+    }
   }
   if (top != g_safe_top.load() || left != g_safe_left.load() || right != g_safe_right.load() || bottom != g_safe_bottom.load()) {
     g_safe_top.store(top); g_safe_left.store(left); g_safe_right.store(right); g_safe_bottom.store(bottom);
@@ -447,6 +471,14 @@ void* window_create(int w, int h, const wchar_t* title, bool visible) {
   if (!g_window) die("SDL window: %s", SDL_GetError());
   g_view = SDL_Metal_CreateView(g_window);
   if (!g_view) die("SDL Metal view: %s", SDL_GetError());
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+  if (const char* orientation = std::getenv("MELEE_ORIENTATION")) {   // screenshot aid, same as the launcher's
+    SDL_PropertiesID props = SDL_GetWindowProperties(g_window);
+    void* uiwindow = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, nullptr);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(),
+                   ^{ window_request_orientation_apple(uiwindow, orientation); });
+  }
+#endif
   refresh_client_size();
   int count = 0;
   if (SDL_JoystickID* ids = SDL_GetGamepads(&count)) {
