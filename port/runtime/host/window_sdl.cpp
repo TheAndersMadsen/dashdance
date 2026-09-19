@@ -33,6 +33,7 @@ bool window_fold_division_apple(void* uiwindow, float pixels_per_point, float* o
 // pixels, points, then the four safe insets, all in pixels. See window_fold_apple.mm.
 bool window_sync_apple(void* uiwindow, float* out);
 bool window_request_orientation_apple(void* uiwindow, const char* orientation);
+void window_hinge_watch_apple(void* uiwindow);   // pose breadcrumbs into the session log
 #include <dispatch/dispatch.h>
 #endif
 
@@ -305,7 +306,9 @@ void refresh_client_size() {
   float top = 0, left = 0, right = 0, bottom = 0;
 #if defined(__APPLE__) && TARGET_OS_IPHONE
   if (uiwindow && window_sync_apple_was_used) {
-    top = ui[4]; left = ui[5]; right = ui[6]; bottom = ui[7];
+    // Safe insets plus any occlusion region reaching further inward (the under-display camera
+    // while it streams; the outer camera beyond the safe inset). Interactive controls dodge.
+    top = ui[4] + ui[8]; left = ui[5] + ui[9]; right = ui[6] + ui[10]; bottom = ui[7] + ui[11];
   } else
 #endif
   {
@@ -480,6 +483,13 @@ void* window_create(int w, int h, const wchar_t* title, bool visible) {
   }
 #endif
   refresh_client_size();
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+  {
+    SDL_PropertiesID hinge_props = SDL_GetWindowProperties(g_window);
+    void* uiwindow = SDL_GetPointerProperty(hinge_props, SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, nullptr);
+    if (uiwindow) window_hinge_watch_apple(uiwindow);
+  }
+#endif
   int count = 0;
   if (SDL_JoystickID* ids = SDL_GetGamepads(&count)) {
     for (int i = 0; i < count; ++i) open_gamepad(ids[i]);

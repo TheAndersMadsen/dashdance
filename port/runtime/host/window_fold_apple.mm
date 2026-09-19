@@ -5,6 +5,7 @@
 
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 #import <UIKit/UIKit.h>
+#include <algorithm>
 #include <cstring>
 
 // Returns true and fills x0,y0,x1,y1 (client pixels) when a division region is
@@ -65,13 +66,31 @@ bool window_sync_apple(void* uiwindow, float* out) {
     CAMetalLayer* layer = (CAMetalLayer*)metal_view.layer;
     CGSize drawable = layer.drawableSize;
     const UIEdgeInsets insets = metal_view.safeAreaInsets;
+    const float px_per_pt = out[0] && out[2] ? (float)drawable.width / (float)metal_view.bounds.size.width : 1.0f;
     out[0] = (float)drawable.width;   out[1] = (float)drawable.height;   // client pixels
     out[2] = (float)metal_view.bounds.size.width;                        // points
     out[3] = (float)metal_view.bounds.size.height;
-    out[4] = insets.top * out[0] / out[2];                               // safe insets in pixels
-    out[5] = insets.left * out[0] / out[2];
-    out[6] = insets.right * out[0] / out[2];
-    out[7] = insets.bottom * out[0] / out[2];
+    out[4] = insets.top * px_per_pt;                                     // safe insets in pixels
+    out[5] = insets.left * px_per_pt;
+    out[6] = insets.right * px_per_pt;
+    out[7] = insets.bottom * px_per_pt;
+    out[8] = out[9] = out[10] = out[11] = 0.0f;                          // extra occlusion insets, pixels
+    // Occlusion regions (the outer camera, or the under-display camera while it streams) on top
+    // of the safe area: only the part that reaches further inward than the safe inset counts, so
+    // nothing is double-counted and the layout can dodge the camera when it activates.
+    if (@available(iOS 27.1, *)) {
+      const CGRect bounds = metal_view.bounds;
+      for (UIViewReservedRegion* region in [metal_view reservedRegionsOfKind:[UIViewReservedRegionKind occlusionRegionKind]]) {
+        if (!region.isActive) continue;
+        const CGRect f = region.frame;
+        out[9] = std::max(out[9], (float)(CGRectGetMaxX(f) - insets.left) * px_per_pt);                     // reaches in from the left
+        out[10] = std::max(out[10], (float)(insets.right - CGRectGetMinX(f)) * px_per_pt);                  // from the right
+        out[8] = std::max(out[8], (float)(CGRectGetMaxY(f) - insets.top) * px_per_pt);                      // from the top
+        out[11] = std::max(out[11], (float)(insets.bottom - (bounds.size.height - CGRectGetMinY(f))) * px_per_pt);  // from the bottom
+      }
+      out[9] = std::max(0.0f, out[9]); out[10] = std::max(0.0f, out[10]);
+      out[8] = std::max(0.0f, out[8]); out[11] = std::max(0.0f, out[11]);
+    }
     return drawable.width > 0 && drawable.height > 0 && out[2] > 0 && out[3] > 0;
   }
   return false;
@@ -92,5 +111,38 @@ bool window_request_orientation_apple(void* uiwindow, const char* orientation) {
     return true;
   }
   return false;
+}
+#endif
+
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+#include <atomic>
+#include <cstdlib>
+namespace host { void log(const char* format, ...); }
+// Hinge breadcrumb (iPhone Duo only): logs coarse pose changes and the angle at 15° steps into
+// the session log, so a pose-dependent bug report says which pose it happened in. Layout never
+// reads the angle — that is what the reserved-region queries are for.
+void window_hinge_watch_apple(void* uiwindow) {
+  if (@available(iOS 27.1, *)) {
+    UIWindow* window = (__bridge UIWindow*)uiwindow;
+    if (!window) return;
+    static UIHingeInteraction* interaction = nil;   // retained for the process lifetime
+    interaction = [[UIHingeInteraction alloc] initWithUpdateHandler:^(UIHingeInteraction*, UIHingeInteractionUpdate* update) {
+      if (!update.hinge) {
+        static std::atomic<bool> none_reported{false};
+        if (!none_reported.exchange(true)) host::log("hinge: none on this device");
+        return;
+      }
+      static std::atomic<int> last_status{0};
+      static std::atomic<int> last_angle_step{-999};
+      const int status = (int)update.hinge.status;
+      const int step = (int)(update.hinge.angle / 15.0);
+      if (status != last_status.exchange(status) || step != last_angle_step.exchange(step)) {
+        static const char* names[] = {"unknown", "closed", "partially open", "fully open"};
+        host::log("hinge: %s (%.0f degrees)", names[status >= 1 && status <= 3 ? status : 0], update.hinge.angle);
+      }
+    }];
+    UIView* view = window.rootViewController.view ?: window;
+    [view addInteraction:interaction];
+  }
 }
 #endif
