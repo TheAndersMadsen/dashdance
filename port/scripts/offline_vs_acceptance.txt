@@ -5,12 +5,12 @@
 # its frame numbers count from the first retrace the gate matches. This is
 # immune to boot-length variance.
 #
-# The Slippi log-in menu (the main-menu scene reached after answering the
-# fresh-card prompt) currently ignores scripted input, so automation runs set
-# MELEE_FORCE_SCENE=0x0200: when the guest reaches the main menu, the runtime
-# fast-forwards the state machine to the VS character select (the "boot to
-# CSS" Gecko-code trick). The scene-gated blocks then drive the CSS, the
-# stage select, and the match inputs.
+# The Slippi main menu is the Online Play log-in screen; it responds to input
+# only once it believes the player is logged in, so automation runs set
+# MELEE_FAKE_LOGIN=1 (the offline EXI handler reports a logged-in identity).
+# The gated block then backs out of Online Play and enters VS Mode > Melee,
+# which reaches the regular offline character select. The scene-gated blocks
+# then drive the CSS, the stage select, and the match inputs.
 #
 # Boot scene: answer the memory-card prompt (A = Yes, creates game data).
 @scene 0x28 0x00
@@ -21,14 +21,33 @@
 640 A
 670
 
-# VS character select: clear the offline-services notice, both ports pick the
-# highlighted characters, then START.
+# Slippi main menu (Online Play log-in): back out twice, down to VS Mode,
+# enter, and choose Melee to reach the offline CSS.
+@scene 0x01 0x00
+60 B
+70
+160 B
+170
+260 sy=-127
+266
+320 A
+330
+420 A
+430
+
+# VS character select: both hands spawn on their HMN tag. A enters the grid,
+# a second A picks the highlighted character for each port, then START.
 @scene 0x02 0x00
-100 Z
-200 A
-220 p=2 A
-330 START
-340
+150 A
+170
+280 A
+300
+400 p=2 A
+420 p=2
+520 p=2 A
+540 p=2
+700 START
+720
 
 # Stage select: hover Battlefield, select, and the match begins.
 @scene 0x02 0x01

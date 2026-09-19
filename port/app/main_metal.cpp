@@ -36,6 +36,7 @@ const char* metal_usage() {
          "  --profile-dir ABS_FRESH_DIR --card-dir ABS_FRESH_DIR --cache-dir ABS_FRESH_DIR\n"
          "  [--script ABS_FILE] [--strict-aot | --allow-interpreter]\n"
          "  [--state-trace ABS_CACHE_FILE] [--audio-dump ABS_CACHE_FILE] [--log-file ABS_CACHE_FILE]\n"
+         "  [--gx-capture ABS_CACHE_FILE [--gx-capture-sequence N]] [--expect-scene 0xSSMM]\n"
          "  [--trace-calls] [--hang-watch 1..60] [--validate-only]\n"
          "This first Metal target is offline. It uses deterministic input and no audio device.\n"
          "All output directories must be explicit, absent, and have existing parents.\n";
@@ -163,6 +164,10 @@ int main(int argc, char** argv) {
   if (!host::headless_audio_output_ok()) {
     host::log("isolated AI DMA output failed");
     code = 1;
+  }
+  if (!code && launch.expect_scene && !host::scene_trace_snapshot().saw(launch.expected_scene)) {
+    host::log("required scene 0x%04X was not observed (state byte high, mode byte low)", launch.expected_scene);
+    code = 5;
   }
   ppc::log_aot_diagnostics();
   uint64_t calls = 0, instructions = 0;

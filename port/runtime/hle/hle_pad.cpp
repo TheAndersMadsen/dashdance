@@ -43,8 +43,11 @@ HLE(PADRead) {
     return static_cast<uint16_t>(0);
   }();
   if (force_scene && host::rd8(0x80479D30) == 0x01) {
-    host::wr8(0x80479D30, static_cast<uint8_t>(force_scene & 0xFF));
-    host::wr8(0x80479D33, static_cast<uint8_t>(force_scene >> 8));
+    // routingInfo layout (gm_1A3F.c): +0 curr_mode = GameModeKind
+    // (GM_VS=0x02...), +3 curr_state_id (VS: CSS=0, SSS=1). The env value is
+    // 0xMMSS, so mode takes the high byte and state the low byte.
+    host::wr8(0x80479D30, static_cast<uint8_t>(force_scene >> 8));
+    host::wr8(0x80479D33, static_cast<uint8_t>(force_scene & 0xFF));
     if (static_cast<bool>(std::getenv("MELEE_PAD_TRACE"))) {
       host::log("[padtrace] forced scene to 0x%04X", force_scene);
     }
