@@ -113,6 +113,9 @@ add_test(NAME port_slippi_game_files COMMAND port_slippi_game_file_test)
 add_executable(port_slippi_record_events_test tests/slippi_record_events_test.cpp)
 target_include_directories(port_slippi_record_events_test PRIVATE runtime/hle)
 add_test(NAME port_slippi_record_events COMMAND port_slippi_record_events_test)
+add_executable(port_slippi_net_diag_test tests/slippi_net_diag_test.cpp runtime/hle/slippi_net_diag.cpp)
+target_include_directories(port_slippi_net_diag_test PRIVATE runtime/hle runtime/host runtime/ppc)
+add_test(NAME port_slippi_net_diag COMMAND port_slippi_net_diag_test)
 add_executable(port_slippi_matchmaking_protocol_test tests/slippi_matchmaking_protocol_test.cpp
   runtime/hle/slippi_matchmaking_protocol.cpp)
 target_include_directories(port_slippi_matchmaking_protocol_test PRIVATE runtime/hle third_party)
@@ -312,7 +315,7 @@ set(PORT_PORTABLE_RUNTIME_SOURCES
   runtime/hle/ax_ucode.cpp runtime/hle/exi_slippi.cpp
   runtime/hle/hle_card.cpp runtime/hle/hle_dvd.cpp runtime/hle/dvd_read_worker.cpp runtime/hle/hle_os.cpp
   runtime/hle/hle_pad.cpp runtime/hle/pad_rumble.cpp runtime/hle/hle_stubs.cpp runtime/hle/jukebox.cpp
-  runtime/hle/slippi_net.cpp runtime/hle/slippi_online.cpp runtime/hle/slippi_offline.cpp
+  runtime/hle/slippi_net.cpp runtime/hle/slippi_net_diag.cpp runtime/hle/slippi_online.cpp runtime/hle/slippi_offline.cpp
   runtime/hle/slippi_playback.cpp runtime/hle/slippi_report.cpp
   runtime/host/host.cpp runtime/host/host_log.cpp runtime/host/vcdiff.cpp runtime/host/headless_options.cpp runtime/host/input_script.cpp
   runtime/host/file_identity.cpp runtime/host/headless_manifest.cpp

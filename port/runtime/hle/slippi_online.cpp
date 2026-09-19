@@ -4,6 +4,7 @@
 // in a match, and capture/load savestates around rollbacks.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "slippi_online.h"
+#include "slippi_net_diag.h"
 #include "slippi_offline.h"
 
 #if defined(MELEE_PORT_OFFLINE) && MELEE_PORT_OFFLINE
@@ -23,6 +24,7 @@ void init() {
 }
 void shutdown() { g_initialized = false; }
 uint64_t rollback_count() { return 0; }
+int32_t current_online_frame() { return 0; }
 bool is_online_match() { return false; }
 bool handle(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, std::vector<uint8_t>& q) {
   if (!g_initialized) init();
@@ -207,6 +209,7 @@ void cleanup_connection() {
   g_overwrite_selections.clear();
   g_play_session_active = false;
   g_in_online_match = false;
+  net_diag::match_ended("reset");
   host::set_online_ping_ms(-1);
   host::set_emulation_speed(1.0);
 }
@@ -408,6 +411,7 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
     g_local_selections.Reset();
     if (g_netplay) g_netplay->StartSlippiGame();
     g_in_online_match = true;
+    net_diag::match_started(host::options.cache_dir.c_str());
     host::input_mark_match_start();
     g_local_checksums.clear(); g_checksums_compared = 0; g_checksums_mismatched = 0; g_last_checksum_frame = 0;
     for (auto& gap : g_input_gap_start) gap = 0;
@@ -452,6 +456,7 @@ void handle_load_savestate(const uint8_t* payload) {
   for (int i = 4; be32(payload + i) != 0; i += 8) blocks.push_back({be32(payload + i), be32(payload + i + 4)});
   g_active_savestates[frame]->Load(blocks);
   ++g_rollbacks;
+  net_diag::on_rollback();
   // One line per rollback: a crash or desync right after one points at savestate coverage.
   host::log("slippi: rollback to frame %d from frame %d (%zu preserved blocks)", frame, g_current_online_frame, blocks.size());
   for (auto& kv : g_active_savestates) g_available_savestates.push_back(std::move(kv.second));
@@ -847,6 +852,7 @@ void handle_get_player_settings(std::vector<uint8_t>& q) {
 Config& config() { return g_config; }
 bool available() { return true; }
 uint64_t rollback_count() { return g_rollbacks; }
+int32_t current_online_frame() { return g_current_online_frame; }
 bool is_online_match() { return g_in_online_match; }
 
 void init() {
@@ -893,6 +899,7 @@ void shutdown() {
   g_direct_codes.reset();
   g_teams_codes.reset();
   g_in_online_match = false;
+  net_diag::match_ended("shutdown");
 }
 
 bool handle(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, std::vector<uint8_t>& q) {

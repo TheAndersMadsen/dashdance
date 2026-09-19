@@ -8,6 +8,7 @@
 #include "slippi_net.h"
 #if !defined(MELEE_PORT_OFFLINE) || !MELEE_PORT_OFFLINE
 #include "host.h"
+#include "slippi_net_diag.h"
 #if defined(_WIN32)
 #define NOMINMAX
 #include <winsock2.h>
@@ -279,6 +280,7 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
         ack << (uint8_t)NP_MSG_SLIPPI_PAD_ACK << frame << player_idx_;
         ENetPacket* epac = enet_packet_create(ack.data(), ack.size(), ENET_PACKET_FLAG_UNSEQUENCED);
         enet_peer_send(peer, 2, epac);
+        net_diag::on_pad_received(time_us(), (int)inputs_to_copy);
       }
       break;
     }
@@ -295,6 +297,7 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
       uint64_t send_time = timers.front().time_us;
       timers.pop_front();
       ping_us_[pidx] = time_us() - send_time;
+      net_diag::on_ack(ping_us_[pidx]);
       ping_sample_sum_us_.fetch_add(ping_us_[pidx], std::memory_order_relaxed);
       ping_sample_count_.fetch_add(1, std::memory_order_relaxed);
       if (pidx == 0) host::set_online_ping_ms((int)(ping_us_[0] / 1000));
@@ -477,12 +480,16 @@ void NetplayClient::ThreadFunc() {
       }
     }
     ENetEvent ev;
+    const uint64_t service_t0 = time_us();
     int net = enet_host_service(client_, &ev, 250);
+    net_diag::on_service(time_us() - service_t0);
     for (;;) {
       std::unique_ptr<Packet> p;
       { std::lock_guard<std::mutex> lk(async_mutex_); if (async_queue_.empty()) break; p = std::move(async_queue_.front()); async_queue_.pop_front(); }
       Send(*p);
+      net_diag::on_queue_depth(async_queue_.size());
     }
+    net_diag::maybe_sample(time_us());
     if (net <= 0) continue;
     switch (ev.type) {
       case ENET_EVENT_TYPE_RECEIVE: {
@@ -537,7 +544,10 @@ void NetplayClient::StartSlippiGame() {
 void NetplayClient::SendSlippiPad(std::unique_ptr<Pad> pad) {
   ConnectStatus st = status_.load(std::memory_order_acquire);
   if (st == ConnectStatus::FAILED || st == ConnectStatus::DISCONNECTED) return;
-  if (pad) local_pad_queue_.push_front(std::move(pad));
+  if (pad) {
+    local_pad_queue_.push_front(std::move(pad));
+    net_diag::on_pad_sent(time_us());
+  }
   int min_ack = INT_MAX;
   for (int i = 0; i < remote_player_count_; ++i) {
     if (!player_active_[match_info_.remote[i].player_idx].load(std::memory_order_acquire)) continue;

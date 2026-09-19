@@ -109,6 +109,43 @@ std::string cstr(uint32_t addr, size_t max) {
 }
 
 // ---------------- disc ----------------
+// CISO containers (compact GameCube images) are read in place: a one-byte map per logical
+// 2 MB-class block says whether the block is stored (data blocks are packed after the
+// 0x8000 header) or zero-filled. Both known header layouts are accepted: block size at
+// offset 4 with the map at 8 (GCRebuilder), or version 1 at 4 with the block size at 8
+// and the map at 0xC (Dolphin). Raw ISO/GCM needs no map and reads straight through.
+static struct {
+  bool active = false;
+  uint32_t block_size = 0;
+  uint64_t data_offset = 0x8000;
+  std::vector<int64_t> phys;   // logical block -> physical block index in the file, or -1 = zero fill
+} g_ciso;
+
+static bool ciso_open() {
+  uint8_t header[0x8000];
+  if (!seek_file(g_disc, 0) || std::fread(header, 1, sizeof header, g_disc) != sizeof header) return false;
+  if (std::memcmp(header, "CISO", 4) != 0) return false;
+  auto le32 = [&](size_t o) { return (uint32_t)header[o] | ((uint32_t)header[o + 1] << 8) | ((uint32_t)header[o + 2] << 16) | ((uint32_t)header[o + 3] << 24); };
+  const uint32_t a = le32(4), b = le32(8);
+  uint32_t block_size = 0;
+  const uint8_t* map = nullptr;
+  size_t map_bytes = 0;
+  if (a >= 0x200 && (a & (a - 1)) == 0) { block_size = a; map = header + 8; map_bytes = sizeof header - 8; }
+  else if (a == 1 && b >= 0x200 && (b & (b - 1)) == 0) { block_size = b; map = header + 0xC; map_bytes = sizeof header - 0xC; }
+  else { log("warning: unrecognized CISO header layout; treating the image as raw"); return false; }
+  uint32_t blocks = 0;
+  for (size_t i = 0; i < map_bytes && map[i] <= 1; ++i)
+    if (map[i] == 1) blocks = (uint32_t)i + 1;
+  if (!blocks) { log("warning: empty CISO map; treating the image as raw"); return false; }
+  g_ciso.active = true;
+  g_ciso.block_size = block_size;
+  g_ciso.phys.resize(blocks);
+  int64_t next = 0;
+  for (uint32_t i = 0; i < blocks; ++i) g_ciso.phys[i] = map[i] == 1 ? next++ : -1;
+  log("disc: CISO image, %u x %u KB blocks (%u stored), data at %llu", blocks, block_size >> 10, (unsigned)next, (unsigned long long)g_ciso.data_offset);
+  return true;
+}
+
 bool disc_open(const std::string& path) {
   g_disc = std::fopen(path.c_str(), "rb");
   if (!g_disc) return false;
@@ -116,6 +153,7 @@ bool disc_open(const std::string& path) {
 #if defined(__APPLE__)
   fcntl(fileno(g_disc), F_RDAHEAD, 1);
 #endif
+  ciso_open();
   uint8_t hdr[0x440];
   if (!disc_read(0, hdr, sizeof hdr)) return false;
   auto be = [&](int o) { return ((uint32_t)hdr[o] << 24) | ((uint32_t)hdr[o + 1] << 16) | ((uint32_t)hdr[o + 2] << 8) | hdr[o + 3]; };
@@ -130,10 +168,32 @@ static std::mutex g_disc_mutex;   // the DVD worker and the simulation thread sh
 bool disc_read(uint32_t offset, void* dst, uint32_t size) {
   std::lock_guard<std::mutex> lk(g_disc_mutex);
   if (!g_disc) return false;
-  if (!seek_file(g_disc, offset)) return false;
   ++g_disc_reads;
   g_disc_bytes += size;
-  return std::fread(dst, 1, size, g_disc) == size;
+  if (!g_ciso.active) {
+    if (!seek_file(g_disc, offset)) return false;
+    return std::fread(dst, 1, size, g_disc) == size;
+  }
+  const uint64_t data_offset = g_ciso.data_offset;
+  const uint64_t block = g_ciso.block_size;
+  auto* out = (uint8_t*)dst;
+  uint64_t pos = offset, remaining = size;
+  while (remaining) {
+    const uint32_t index = (uint32_t)(pos / block);
+    const size_t within = (size_t)(pos % block);
+    const size_t chunk = std::min<uint64_t>(remaining, block - within);
+    const int64_t phys = index < g_ciso.phys.size() ? g_ciso.phys[index] : -1;
+    if (phys < 0) {
+      std::memset(out, 0, chunk);
+    } else if (!seek_file(g_disc, data_offset + (uint64_t)phys * block + within) ||
+               std::fread(out, 1, chunk, g_disc) != chunk) {
+      return false;
+    }
+    out += chunk;
+    pos += chunk;
+    remaining -= chunk;
+  }
+  return true;
 }
 uint32_t disc_fst_offset() { return g_fst_offset; }
 uint32_t disc_fst_size() { return g_fst_size; }

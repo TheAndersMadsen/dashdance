@@ -29,6 +29,7 @@ bool available();
 bool handle(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, std::vector<uint8_t>& read_queue);
 // Counts rollback loads so the renderer can treat them as discontinuities.
 uint64_t rollback_count();
+int32_t current_online_frame();
 bool is_online_match();
 
 }  // namespace slippi::online
