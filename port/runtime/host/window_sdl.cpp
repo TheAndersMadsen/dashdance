@@ -27,6 +27,10 @@
 #include <string>
 #include <vector>
 
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+bool window_fold_division_apple(void* uiwindow, float pixels_per_point, float* out);   // window_fold_apple.mm
+#endif
+
 namespace host {
 namespace {
 enum : uint16_t {
@@ -46,6 +50,9 @@ PadState g_ui_pad{};
 bool g_ui_gamecube = false;
 int g_client_w = 0, g_client_h = 0;
 std::atomic<float> g_safe_top{0.0f}, g_safe_left{0.0f}, g_safe_right{0.0f}, g_safe_bottom{0.0f};   // pixels; read by the renderer thread
+// iPhone Duo: the fold's active division region in client pixels (0/absent when flat or unsupported).
+std::atomic<bool> g_div_active{false};
+std::atomic<float> g_div_x0{0.0f}, g_div_y0{0.0f}, g_div_x1{0.0f}, g_div_y1{0.0f};
 std::vector<SDL_Gamepad*> g_gamepads;
 std::string gamepad_guid(SDL_Gamepad* pad) {
   char buf[64];
@@ -94,13 +101,29 @@ void touch_layout() {
   const float pad = 24.0f * t.pt, W = (float)t.w, H_full = (float)t.h;
   // Portrait (iPhone, iPad held upright): the game sits at the top, the controls fill the rest.
   const bool portrait = H_full > W * 1.05f;
-  const float safe_l = g_safe_left.load(), safe_r = g_safe_right.load(), safe_b = g_safe_bottom.load();
+  const float safe_t = g_safe_top.load(), safe_l = g_safe_left.load(), safe_r = g_safe_right.load(), safe_b = g_safe_bottom.load();
+  const bool div_active = g_div_active.load();
+  const float div_x0 = g_div_x0.load(), div_y0 = g_div_y0.load(), div_x1 = g_div_x1.load(), div_y1 = g_div_y1.load();
+  const bool div_horizontal = div_active && div_y1 - div_y0 < div_x1 - div_x0;
   const GameRect game = window_game_rect(W, H_full, g_touch_aspect);
-  const float top = portrait ? game.y + game.h : g_safe_top.load();   // below the island and the game
-  const float H = std::max(H_full - top - safe_b, 120.0f);                                   // above the home indicator
+  float top = portrait ? game.y + game.h : g_safe_top.load();   // below the island and the game
+  float bottom_inset = safe_b;                                   // above the home indicator
+  if (div_horizontal) {
+    // Partially folded (book / tabletop): the curved band is hard to see and to tap, so the
+    // controls live entirely in the bottom region (thumb reach); only when that region is the
+    // cramped one do they move above the fold instead.
+    const float below = H_full - div_y1 - safe_b;
+    if (below >= 220.0f * t.pt || below >= div_y0 - safe_t) top = std::max(top, div_y1);
+    else { top = safe_t; bottom_inset = std::max(safe_b, H_full - div_y0); }
+  }
+  const float H = std::max(H_full - top - bottom_inset, 120.0f);
   const float col_h = std::min(H - 2 * pad, 440.0f * t.pt);   // same size on every display (iPhone Duo outer and inner), sitting low within thumb reach
   const float y_base = top + (H - 2 * pad - col_h);
-  const float col_w = (portrait ? std::min(W * 0.42f, 260.0f * t.pt) : std::min(std::max(200.0f * t.pt, col_h * 0.46f), W * 0.28f)) * g_touch_scale;
+  const float usable = std::max(W - pad * 2 - safe_l - safe_r, 160.0f * t.pt);
+  float col_w = (portrait ? std::min(W * 0.42f, 260.0f * t.pt) : std::min(std::max(200.0f * t.pt, col_h * 0.46f), W * 0.28f)) * g_touch_scale;
+  col_w = std::min(col_w, usable / 2);   // the two columns must never overlap, whatever the safe insets
+  if (div_active && !div_horizontal)   // flat book: a vertical fold band; the columns must stay clear of it
+    col_w = std::min(col_w, std::max(std::min(div_x0 - pad - safe_l, W - pad - safe_r - div_x1), 80.0f * t.pt));
   const float trig_h = col_h * 0.13f, mid = std::min(col_w, col_h * 0.60f), row_h = col_h * 0.27f;
   const float gap = 16.0f * t.pt, btn_d = std::max(std::min(row_h, col_w * 0.42f), 8.0f);
   auto column = [&](float x0, bool left) {
@@ -271,6 +294,26 @@ void refresh_client_size() {
   if (top != g_safe_top.load() || left != g_safe_left.load() || right != g_safe_right.load() || bottom != g_safe_bottom.load()) {
     g_safe_top.store(top); g_safe_left.store(left); g_safe_right.store(right); g_safe_bottom.store(bottom);
     g_touch.w = 0;   // rotation moves the island and the home indicator: lay the controls out again
+  }
+  // iPhone Duo: the fold moves with every open/close/pose change, so re-query it with the
+  // safe areas. MELEE_FAKE_FOLD=x0,y0,x1,y1 overrides for layout testing on other devices.
+  bool div_active = false; float div[4] = {0, 0, 0, 0};
+  static const char* fake_fold = std::getenv("MELEE_FAKE_FOLD");
+  if (fake_fold && *fake_fold && std::sscanf(fake_fold, "%f,%f,%f,%f", &div[0], &div[1], &div[2], &div[3]) == 4) {
+    div_active = true;
+  } else {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    SDL_PropertiesID props = SDL_GetWindowProperties(g_window);
+    void* uiwindow = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, nullptr);
+    if (uiwindow) div_active = window_fold_division_apple(uiwindow, g_pixels_per_point, div);
+#endif
+  }
+  if (!div_active || div[2] <= div[0] || div[3] <= div[1]) div_active = false;
+  if (div_active != g_div_active.load() || (div_active && (div[0] != g_div_x0.load() || div[1] != g_div_y0.load() ||
+                                                           div[2] != g_div_x1.load() || div[3] != g_div_y1.load()))) {
+    g_div_active.store(div_active);
+    g_div_x0.store(div[0]); g_div_y0.store(div[1]); g_div_x1.store(div[2]); g_div_y1.store(div[3]);
+    g_touch.w = 0;   // the fold moved: lay the controls out again
   }
 }
 
@@ -454,7 +497,10 @@ GameRect window_game_rect(float ww, float wh, float aspect) {
   if (wh > ww * 1.05f) {   // upright
     float w = ww, h = ww / aspect;
 #if defined(__APPLE__) && TARGET_OS_IPHONE   // iPhone, iPad, Vision Pro: touch controls below, and iPhone Duo's fold
-    const float cap = std::max(wh * 0.5f - st, wh * 0.25f);   // keep the fold (and room for controls) below the game
+    float cap = std::max(wh * 0.5f - st, wh * 0.25f);   // keep the fold (and room for controls) below the game
+    if (g_div_active.load()) {   // iPhone Duo: the real fold region; cross it visually rather than shrink below a fifth of the screen
+      cap = std::max(g_div_y0.load() - st, wh * 0.2f);
+    }
     if (h > cap) { h = cap; w = h * aspect; }
     return {(ww - w) * 0.5f, std::min(st, std::max(0.0f, wh - sb - h)), w, h};
 #else

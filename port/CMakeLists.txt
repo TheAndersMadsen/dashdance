@@ -464,6 +464,18 @@ if(MELEE_BUILD_PORT_METAL)
     "void audio_session_report() {}\n"
     "std::vector<ReadinessItem> competitive_readiness(int, bool, int) { return {}; }\n"
     "}\n")
+  # MetalFX ships in the macOS and iOS-device SDKs but not the iOS/visionOS simulators;
+  # gx_metal.mm's __has_include guard compiles the fallback there, so only link it when present.
+  set(MELEE_METALFX_FRAMEWORK "")
+  set(MELEE_SDK_ROOT "${CMAKE_OSX_SYSROOT}")
+  if(MELEE_SDK_ROOT AND NOT IS_ABSOLUTE "${MELEE_SDK_ROOT}")
+    execute_process(COMMAND xcrun --sdk "${MELEE_SDK_ROOT}" --show-sdk-path OUTPUT_VARIABLE MELEE_SDK_ROOT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+  elseif(NOT MELEE_SDK_ROOT)
+    execute_process(COMMAND xcrun --show-sdk-path OUTPUT_VARIABLE MELEE_SDK_ROOT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+  endif()
+  if(MELEE_SDK_ROOT AND EXISTS "${MELEE_SDK_ROOT}/System/Library/Frameworks/MetalFX.framework/Headers/MetalFX.h")
+    set(MELEE_METALFX_FRAMEWORK "-framework MetalFX")
+  endif()
   add_library(runtime_metal STATIC ${PORT_PORTABLE_RUNTIME_SOURCES}
     runtime/host/input_sdl.cpp runtime/host/audio_sdl.cpp runtime/host/gc_adapter_none.cpp
     runtime/host/window_metal.cpp runtime/host/metal_frontend.cpp runtime/host/metal_frontend_aurora.cpp
@@ -486,7 +498,7 @@ if(MELEE_BUILD_PORT_METAL)
   # feed it, the login tables name characters and stages, and the HTTP transport
   # is the same Apple one the headless and macOS application binaries link.
   set_source_files_properties(runtime/hle/slippi_http_apple.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
-  target_link_libraries(runtime_metal PUBLIC "-framework Foundation" "-framework MetalFX")
+  target_link_libraries(runtime_metal PUBLIC "-framework Foundation" ${MELEE_METALFX_FRAMEWORK})
   add_dependencies(runtime_metal port_verify_generated)
 
   # Only the Aurora-facing translation units need C++20; the shared runtime stays
@@ -540,7 +552,7 @@ if(MELEE_BUILD_PORT_METAL)
   # Aurora is only built here for its vendored SDL3.
   add_library(runtime_mac STATIC ${PORT_PORTABLE_RUNTIME_SOURCES} runtime/hle/slippi_text.cpp
     runtime/hle/slippi_http_apple.mm runtime/hle/slippi_login.cpp runtime/hle/slippi_history.cpp
-    runtime/host/window_sdl.cpp runtime/host/input_config.cpp runtime/host/dashboard.cpp runtime/host/audio_sdl.cpp runtime/host/haptics_apple.mm runtime/host/apple_power.mm runtime/host/controller_rate.mm runtime/host/game_menu.cpp runtime/host/notify_apple.mm runtime/hle/discord_rpc.cpp runtime/host/gc_diagram.cpp
+    runtime/host/window_sdl.cpp runtime/host/window_fold_apple.mm runtime/host/input_config.cpp runtime/host/dashboard.cpp runtime/host/audio_sdl.cpp runtime/host/haptics_apple.mm runtime/host/apple_power.mm runtime/host/controller_rate.mm runtime/host/game_menu.cpp runtime/host/notify_apple.mm runtime/hle/discord_rpc.cpp runtime/host/gc_diagram.cpp
     ${PORT_GC_ADAPTER_SOURCE} ${PORT_APPLE_LAUNCHER_SOURCE}
     runtime/gx/gx_metal.mm runtime/gx/gx_msl.cpp)
   set_source_files_properties(runtime/gx/gx_metal.mm runtime/hle/slippi_http_apple.mm runtime/host/haptics_apple.mm runtime/host/apple_power.mm runtime/host/controller_rate.mm runtime/host/notify_apple.mm
@@ -554,7 +566,7 @@ if(MELEE_BUILD_PORT_METAL)
     MELEE_PORT_INPUT_MANIFEST_PATH="${MELEE_PORT_INPUT_MANIFEST}"
     MELEE_PORT_INPUT_MANIFEST_SHA256="${MELEE_PORT_INPUT_MANIFEST_SHA256}")
   target_link_libraries(runtime_mac PUBLIC native_animation port_build_options Threads::Threads port_enet
-    Iconv::Iconv ${PORT_APPLE_UI_FRAMEWORK} "-framework Foundation" "-framework Metal" "-framework MetalFX" "-framework QuartzCore" "-framework CoreText" "-framework CoreGraphics" "-framework ImageIO" "-framework Network" "-framework GameController" "-framework UserNotifications" ${PORT_APPLE_UTI_FRAMEWORK}
+    Iconv::Iconv ${PORT_APPLE_UI_FRAMEWORK} "-framework Foundation" "-framework Metal" ${MELEE_METALFX_FRAMEWORK} "-framework QuartzCore" "-framework CoreText" "-framework CoreGraphics" "-framework ImageIO" "-framework Network" "-framework GameController" "-framework UserNotifications" ${PORT_APPLE_UTI_FRAMEWORK}
     ${AURORA_SDL3_TARGET})
   if(LIBUSB_FOUND AND NOT MELEE_DEVICE_TARGET)
     target_link_libraries(runtime_mac PUBLIC PkgConfig::LIBUSB)
