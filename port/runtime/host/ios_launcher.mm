@@ -626,6 +626,8 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
 @property(nonatomic) BOOL done, playPressed, busy;
 @property(nonatomic) UIScrollView* scroll;
 @property(nonatomic) UIStackView* cardColumns; @property(nonatomic) NSLayoutConstraint* maxWidth;   // two columns of cards when wide
+@property(nonatomic) NSLayoutConstraint *foldLeft, *foldRight;   // active only while a fold band splits the two columns
+@property(nonatomic) UIStackView *foldLeftCards, *foldRightCards;
 @property(nonatomic) UIStackView* stack;
 @property(nonatomic) NSArray<UIView*>* entrance;
 @property(nonatomic, copy) NSString* startupError;
@@ -714,6 +716,7 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
   footer.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1]; footer.textColor = [UIColor colorWithWhite:1 alpha:0.45]; footer.numberOfLines = 0; footer.textAlignment = NSTextAlignmentCenter;
   UIStackView* leftCards = [[UIStackView alloc] init]; leftCards.axis = UILayoutConstraintAxisVertical; leftCards.spacing = 16;
   UIStackView* rightCards = [[UIStackView alloc] init]; rightCards.axis = UILayoutConstraintAxisVertical; rightCards.spacing = 16;
+  self.foldLeftCards = leftCards; self.foldRightCards = rightCards;
   for (UIView* v in @[self.stepsCard, self.rankedCard, self.gamesCard, self.accountCard]) [leftCards addArrangedSubview:v];   // you
   for (UIView* v in @[readiness, disc, controllers, display, touch, regionCard]) [rightCards addArrangedSubview:v];                      // the setup
   self.cardColumns = [[UIStackView alloc] initWithArrangedSubviews:@[leftCards, rightCards]];
@@ -789,12 +792,26 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
     UIGlassEffect* glass = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
     glass.tintColor = kGlassTint();
     card = [[UIVisualEffectView alloc] initWithEffect:glass];
-    card.layer.cornerRadius = 22; card.layer.cornerCurve = kCACornerCurveContinuous; card.clipsToBounds = YES;
+    if (@available(iOS 26.0, *)) {
+      // Concentric with the display: the card corners echo the screen's curvature instead of an
+      // arbitrary 22 pt, the way Apple asks for on iPhone Duo and iOS 26 generally.
+      UICornerConfiguration* corners = [UICornerConfiguration configurationWithRadius:[UICornerRadius containerConcentricRadius]];
+      card.cornerConfiguration = corners;
+    } else {
+      card.layer.cornerRadius = 22;
+    }
+    card.layer.cornerCurve = kCACornerCurveContinuous; card.clipsToBounds = YES;
     return card;
   }
 #endif
   card = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialDark]];
-  card.layer.cornerRadius = 18; card.layer.cornerCurve = kCACornerCurveContinuous; card.clipsToBounds = YES;
+  if (@available(iOS 26.0, *)) {
+    UICornerConfiguration* corners = [UICornerConfiguration configurationWithRadius:[UICornerRadius containerConcentricRadius]];
+    card.cornerConfiguration = corners;
+  } else {
+    card.layer.cornerRadius = 18;
+  }
+  card.layer.cornerCurve = kCACornerCurveContinuous; card.clipsToBounds = YES;
   card.layer.borderWidth = 1; card.layer.borderColor = rgb(0.5, 0.6, 1.0, 0.14).CGColor;
   return card;
 }
@@ -847,12 +864,49 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
   objc_setAssociatedObject(bar, "shape", shape, OBJC_ASSOCIATION_RETAIN);
   return bar;
 }
+// iPhone Duo partially folded: the inner display curves through a vertical division band, and a
+// 50/50 two-column layout puts cards in the curve. Rebalance the columns so each lives inside its
+// region (the gap lands on the band); flat, the band is inactive and the columns are equal again.
+// The scroll content itself is exempt from fold avoidance — this is about the columns as regions.
+- (void)rebalanceColumnsForFold:(BOOL)wide {
+  if (!self.foldLeftCards) return;
+  if (@available(iOS 27.1, *)) {
+    if (wide) {
+      NSArray<UIViewReservedRegion*>* regions = [self.view reservedRegionsOfKind:[UIViewReservedRegionKind divisionRegionKind]];
+      for (UIViewReservedRegion* region in regions) {
+        if (!region.isActive) continue;
+        const CGRect f = [self.view convertRect:region.frame fromView:nil];
+        if (f.size.height <= f.size.width) break;   // a horizontal band: the columns straddle it fine
+        const CGFloat safeL = self.view.safeAreaInsets.left, safeR = self.view.safeAreaInsets.right;
+        const CGFloat left = CGRectGetMinX(f) - safeL, right = self.view.bounds.size.width - safeR - CGRectGetMaxX(f);
+        if (left < 240 || right < 240) break;   // too cramped to be worth rebalancing
+        const CGFloat total = self.cardColumns.bounds.size.width ?: (left + right);
+        if (total < 480) break;
+        self.cardColumns.distribution = UIStackViewDistributionFill;
+        const CGFloat w = total - 16;   // the stack's spacing
+        if (!self.foldLeft) {
+          self.foldLeft = [self.foldLeftCards.widthAnchor constraintEqualToConstant:w * left / (left + right)];
+          self.foldRight = [self.foldRightCards.widthAnchor constraintEqualToConstant:w * right / (left + right)];
+        } else {
+          self.foldLeft.constant = w * left / (left + right);
+          self.foldRight.constant = w * right / (left + right);
+        }
+        self.foldLeft.active = YES; self.foldRight.active = YES;
+        return;
+      }
+    }
+  }
+  if (self.foldLeft) { self.foldLeft.active = NO; self.foldRight.active = NO; }
+  if (self.cardColumns.axis == UILayoutConstraintAxisHorizontal) self.cardColumns.distribution = UIStackViewDistributionFillEqually;
+}
+
 - (void)viewWillLayoutSubviews {
   [super viewWillLayoutSubviews];
   // Wide screens (iPad in landscape, 13-inch iPads, Vision Pro windows) put the cards in two columns; phones and narrow
   // windows keep one readable column in the same order.
   // A regular-width environment with room for two readable columns: iPhone Duo open, iPads, large iPhones in landscape, Vision Pro windows.
   const BOOL wide = self.traitCollection.horizontalSizeClass == UIUserInterfaceSizeClassRegular && self.view.bounds.size.width >= 800;
+  [self rebalanceColumnsForFold:wide];
   if (self.cardColumns && (self.cardColumns.axis == UILayoutConstraintAxisHorizontal) != wide) {
     const BOOL atTop = self.scroll.contentOffset.y <= -self.scroll.adjustedContentInset.top + 1;   // a window resized while showing the top keeps showing the top
     if (atTop) dispatch_async(dispatch_get_main_queue(), ^{ [self.scroll setContentOffset:CGPointMake(0, -self.scroll.adjustedContentInset.top) animated:NO]; });

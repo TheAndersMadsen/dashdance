@@ -292,7 +292,7 @@ void refresh_client_size() {
   // The inner display of a folding iPhone rotates whether the app likes it or not, and SDL's
   // bookkeeping can trail that rotation (stale view frame, stale safe areas). The UIKit truth
   // wins when it is available: it also re-pins the Metal view to its window, which is the fix.
-  float ui[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+  float ui[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   SDL_PropertiesID ui_props = SDL_GetWindowProperties(g_window);
   void* uiwindow = SDL_GetPointerProperty(ui_props, SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, nullptr);
   const bool window_sync_apple_was_used = uiwindow && window_sync_apple(uiwindow, ui);
@@ -555,6 +555,11 @@ GameRect window_game_rect(float ww, float wh, float aspect) {
   return {(ww - w) * 0.5f, (wh - h) * 0.5f, w, h};
 }
 void window_safe_insets(float& top, float& left, float& right, float& bottom) { top = g_safe_top.load(); left = g_safe_left.load(); right = g_safe_right.load(); bottom = g_safe_bottom.load(); }
+bool window_division_region(float out[4]) {
+  if (!g_div_active.load()) return false;
+  out[0] = g_div_x0.load(); out[1] = g_div_y0.load(); out[2] = g_div_x1.load(); out[3] = g_div_y1.load();
+  return true;
+}
 void window_set_fullscreen(bool enabled) { if (g_window) SDL_SetWindowFullscreen(g_window, enabled); }
 
 // ---- launcher services: controllers without a window

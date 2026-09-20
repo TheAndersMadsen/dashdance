@@ -18,6 +18,8 @@ void window_set_fullscreen(bool enabled);
 float window_safe_top_pixels();
 // All four safe-area insets in pixels (island, notch, rounded corners, home indicator); zeros on the Mac.
 void window_safe_insets(float& top, float& left, float& right, float& bottom);
+// iPhone Duo: the active fold division region in client pixels; false when flat or unsupported.
+bool window_division_region(float out[4]);
 float window_pixels_per_point();
 // Where the game's picture goes in a ww x wh pixel window. Held upright it sits under the Dynamic Island and never
 // reaches past the middle of the screen, so on iPhone Duo's inner display the fold falls between the game and the

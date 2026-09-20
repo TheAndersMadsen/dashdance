@@ -257,6 +257,9 @@ void open_controls() { refresh_devices(); g_page = Page::Controls; g_selected = 
 }  // namespace
 
 void menu_init(const RuntimeSettings& initial, std::function<void(const RuntimeSettings&, MenuChange)> apply) {
+  if (const char* open = std::getenv("MELEE_MENU_OPEN")) {   // screenshot aid: start with the menu open
+    if (!open[0] || std::atoi(open)) set_open(true);
+  }
   std::lock_guard<std::mutex> lock(g_mutex);
   g_settings = initial; g_apply = std::move(apply);
   if (const char* e = std::getenv("MELEE_HUD")) g_settings.hud = *e && *e != '0';
@@ -432,7 +435,30 @@ void menu_overlay(OverlayFrame& out, int ww, int wh, bool touch_controls_visible
   const float avail_w = (float)ww - safe_l - safe_r, avail_h = (float)wh - safe_t - safe_b;
   const float panel_w = std::min(avail_w - 2 * pad, unit * 24.0f);
   const float panel_h = pad + title_h + unit * 0.5f + row_h * body_rows + unit * 1.6f + pad;
-  const float x0 = safe_l + (avail_w - panel_w) * 0.5f, y0 = safe_t + std::max(pad, (avail_h - panel_h) * 0.5f), x1 = x0 + panel_w, y1 = y0 + panel_h;
+  float x0 = safe_l + (avail_w - panel_w) * 0.5f, y0 = safe_t + std::max(pad, (avail_h - panel_h) * 0.5f);
+  // iPhone Duo: an interactive panel never sits in the fold. Shift it whole into the larger
+  // adjacent region — the minimum displacement that clears the band — and fall back to centered
+  // when the band would push it off-screen (tiny regions get a centered panel over the curve
+  // rather than a clipped one).
+  float div[4];
+  if (window_division_region(div)) {
+    const float bx0 = div[0], by0 = div[1], bx1 = div[2], by1 = div[3];
+    const float cx1 = x0 + panel_w, cy1 = y0 + panel_h;
+    if (cx1 > bx0 && x0 < bx1 && cy1 > by0 && y0 < by1) {
+      // Move the panel whole into the larger adjacent region, then clamp on-screen; if neither
+      // region fits it, the centered panel stays over the curve rather than being clipped.
+      if (by1 - by0 < bx1 - bx0) {   // horizontal band: above or below
+        const float above = by0 - safe_t, below = (float)wh - safe_b - by1;
+        const float want = below >= above ? by1 : by0 - panel_h;
+        if (std::max(above, below) >= panel_h) y0 = std::clamp(want, safe_t, std::max(safe_t, (float)wh - safe_b - panel_h));
+      } else {                       // vertical band: left or right
+        const float left = bx0 - safe_l, right = (float)ww - safe_r - bx1;
+        const float want = right >= left ? bx1 : bx0 - panel_w;
+        if (std::max(left, right) >= panel_w) x0 = std::clamp(want, safe_l, std::max(safe_l, (float)ww - safe_r - panel_w));
+      }
+    }
+  }
+  const float x1 = x0 + panel_w, y1 = y0 + panel_h;
   out.shapes.push_back({x0, y0, x1, y1, 0.03f, 0.04f, 0.12f, 0.985f, unit * 0.7f, 0.0f, 0.0f, 0, 0.0f, 0.0f});
   out.shapes.push_back({x0, y0, x1, y1, 0.5f, 0.6f, 1.0f, 0.25f, unit * 0.7f, 1.5f, 0.0f, 0, 0.0f, 0.0f});
   // Title bar in Melee's angled yellow.
