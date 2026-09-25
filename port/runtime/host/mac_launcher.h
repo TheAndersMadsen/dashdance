@@ -7,6 +7,7 @@ namespace host {
 struct LauncherSettings {
   std::string iso;             // remembered disc image; empty until chosen/imported
   bool widescreen = false;
+  bool flash_failed_lcancel = false;
   float sharpness = 0.0f;      // 0..1
   float overlay_opacity = 1.0f;// on-screen controller (touch devices)
   float overlay_scale = 1.0f;  // 0.7..1.4

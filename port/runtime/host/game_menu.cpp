@@ -26,7 +26,7 @@ constexpr int kEscapeScancode = 41;   // SDL_SCANCODE_ESCAPE
 constexpr int kSkipFrames = 6 * 60;   // remap: a control left untouched for 6 s keeps its binding
 
 enum class Page { Main, Controls, Remap };
-enum MainRow { ROW_SCALE, ROW_ANISO, ROW_UPSCALE, ROW_SHARPEN, ROW_VSYNC, ROW_WIDESCREEN, ROW_VOLUME, ROW_TOUCH_OPACITY, ROW_TOUCH_SIZE, ROW_FULLSCREEN, ROW_ONLINE_DELAY, ROW_CONTROLS, ROW_HUD, ROW_RESUME, ROW_MAIN_COUNT };
+enum MainRow { ROW_SCALE, ROW_ANISO, ROW_UPSCALE, ROW_SHARPEN, ROW_VSYNC, ROW_WIDESCREEN, ROW_FLASH_LCANCEL, ROW_VOLUME, ROW_TOUCH_OPACITY, ROW_TOUCH_SIZE, ROW_FULLSCREEN, ROW_ONLINE_DELAY, ROW_CONTROLS, ROW_HUD, ROW_RESUME, ROW_MAIN_COUNT };
 enum ControlsRow { C_DEVICE, C_REMAP, C_STICK_DZ, C_CSTICK_DZ, C_TRIGGER, C_SWAP, C_RUMBLE, C_TEST_RUMBLE, C_MODIFIER, C_RESET, C_BACK };
 struct Device { std::string guid, name; };   // an empty guid is the keyboard
 
@@ -80,6 +80,7 @@ const char* main_name(int r) {
     case ROW_SHARPEN: return "Sharpen";
     case ROW_VSYNC: return "Display sync";
     case ROW_WIDESCREEN: return "Widescreen (next launch)";
+    case ROW_FLASH_LCANCEL: return "L-cancel flash (next launch)";
     case ROW_VOLUME: return "Volume";
     case ROW_TOUCH_OPACITY: return "Touch controls opacity";
     case ROW_TOUCH_SIZE: return "Touch controls size";
@@ -100,6 +101,7 @@ std::string main_value(int r, const RuntimeSettings& s) {
     case ROW_SHARPEN: std::snprintf(b, sizeof b, "%d%%", (int)std::lround(s.sharpness * 100)); return b;
     case ROW_VSYNC: return s.vsync ? "On" : "Off (lowest latency)";
     case ROW_WIDESCREEN: return s.widescreen ? "16:9" : "4:3";
+    case ROW_FLASH_LCANCEL: return s.flash_failed_lcancel ? "On" : "Off";
     case ROW_VOLUME: std::snprintf(b, sizeof b, "%d%%", s.volume); return b;
     case ROW_TOUCH_OPACITY: std::snprintf(b, sizeof b, "%d%%", (int)std::lround(s.overlay_opacity * 100)); return b;
     case ROW_TOUCH_SIZE: std::snprintf(b, sizeof b, "%.2fx", s.overlay_scale); return b;
@@ -120,6 +122,7 @@ int main_step(int r, int dir, RuntimeSettings& s) {
     case ROW_SHARPEN: s.sharpness = std::clamp(s.sharpness + 0.1f * dir, 0.0f, 1.0f); return (int)MenuChange::Graphics;
     case ROW_VSYNC: s.vsync = !s.vsync; return (int)MenuChange::Graphics;
     case ROW_WIDESCREEN: s.widescreen = !s.widescreen; return (int)MenuChange::Widescreen;
+    case ROW_FLASH_LCANCEL: s.flash_failed_lcancel = !s.flash_failed_lcancel; return (int)MenuChange::FailedLCancelFlash;
     case ROW_VOLUME: s.volume = std::clamp(s.volume + 10 * dir, 0, 100); return (int)MenuChange::Volume;
     case ROW_TOUCH_OPACITY: s.overlay_opacity = std::clamp(s.overlay_opacity + 0.1f * dir, 0.1f, 1.0f); return (int)MenuChange::TouchControls;
     case ROW_TOUCH_SIZE: s.overlay_scale = std::clamp(s.overlay_scale + 0.1f * dir, 0.7f, 1.4f); return (int)MenuChange::TouchControls;
@@ -399,7 +402,7 @@ void menu_overlay(OverlayFrame& out, int ww, int wh, bool touch_controls_visible
   std::lock_guard<std::mutex> lock(g_mutex);
   g_touch_visible = touch_controls_visible;
   const RuntimeSettings s = g_settings;
-  const float unit = std::min(18.0f * std::max(window_pixels_per_point(), 1.0f), std::min(ww, wh) / 22.0f);   // 18 pt lines on every display, smaller only when the window is tiny
+  float unit = std::min(18.0f * std::max(window_pixels_per_point(), 1.0f), std::min(ww, wh) / 22.0f);
   float safe_t = 0, safe_l = 0, safe_r = 0, safe_b = 0;
   window_safe_insets(safe_t, safe_l, safe_r, safe_b);   // keep clear of the island, the rounded corners and the home indicator
   // Performance HUD: one line, top-left.
@@ -431,6 +434,8 @@ void menu_overlay(OverlayFrame& out, int ww, int wh, bool touch_controls_visible
   out.shapes.push_back({0, 0, (float)ww, (float)wh, 0, 0, 0, 0.55f, 0.0f, 0.0f, 0.0f, 0, 0.0f, 0.0f});
   const std::vector<int> rows = page_rows();
   const int body_rows = g_page == Page::Remap ? 9 : (int)rows.size();
+  const float available_height = (float)wh - safe_t - safe_b;
+  unit = std::min(unit, available_height / (6.1f + 1.45f * body_rows));
   const float row_h = unit * 1.45f, pad = unit * 0.9f, title_h = unit * 1.3f;
   const float avail_w = (float)ww - safe_l - safe_r, avail_h = (float)wh - safe_t - safe_b;
   const float panel_w = std::min(avail_w - 2 * pad, unit * 24.0f);
@@ -495,9 +500,10 @@ void menu_overlay(OverlayFrame& out, int ww, int wh, bool touch_controls_visible
     const float ty = ry + (row_h - unit) * 0.5f;
     const bool main = g_page == Page::Main;
     const std::string value = main ? main_value(r, s) : controls_value(r);
-    out.texts.push_back({x0 + pad, ty, unit * 0.95f, 1, 1, 1, sel ? 1.0f : 0.85f, 0, main ? main_name(r) : controls_name(r), value.empty() ? panel_w - 2 * pad : panel_w * 0.56f - pad});
+    const bool flash_row = main && r == ROW_FLASH_LCANCEL;
+    out.texts.push_back({x0 + pad, ty, unit * 0.95f, 1, 1, 1, sel ? 1.0f : 0.85f, 0, main ? main_name(r) : controls_name(r), value.empty() ? panel_w - 2 * pad : panel_w * (flash_row ? 0.70f : 0.56f) - pad});
     const bool steppable = main ? (r != ROW_RESUME && r != ROW_CONTROLS) : value_row(r);
-    if (!value.empty()) out.texts.push_back({x1 - pad, ty, unit * 0.95f, 0.97f, 0.79f, 0.28f, sel ? 1.0f : 0.8f, 2, sel && steppable ? "<  " + value + "  >" : value, panel_w * 0.42f - pad});
+    if (!value.empty()) out.texts.push_back({x1 - pad, ty, unit * 0.95f, 0.97f, 0.79f, 0.28f, sel ? 1.0f : 0.8f, 2, sel && steppable ? "<  " + value + "  >" : value, panel_w * (flash_row ? 0.25f : 0.42f) - pad});
   }
   const char* hint = touch_controls_visible ? "Tap a row's left or right side to change it"
                    : g_page == Page::Main ? "Up/Down select   Left/Right change   B resume"

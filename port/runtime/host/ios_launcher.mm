@@ -647,7 +647,7 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
 @property(nonatomic) UIStackView* readinessStack; @property(nonatomic) std::string readinessSignature; @property(nonatomic) UIStackView* controllersStack; @property(nonatomic) NSTimer* controllerTimer; @property(nonatomic) NSUInteger controllerCount; @property(nonatomic) std::string controllerSignature;
 // display
 @property(nonatomic) UILabel* regionLabel;
-@property(nonatomic) UISegmentedControl* scaleControl; @property(nonatomic) UISegmentedControl* anisoControl; @property(nonatomic) UISegmentedControl* upscalerControl; @property(nonatomic) UISwitch* vsyncSwitch; @property(nonatomic) UISwitch* widescreenSwitch; @property(nonatomic) UISlider* sharpnessSlider; @property(nonatomic) UISwitch* onlineSwitch; @property(nonatomic) UISegmentedControl* delayControl;
+@property(nonatomic) UISegmentedControl* scaleControl; @property(nonatomic) UISegmentedControl* anisoControl; @property(nonatomic) UISegmentedControl* upscalerControl; @property(nonatomic) UISwitch* vsyncSwitch; @property(nonatomic) UISwitch* widescreenSwitch; @property(nonatomic) UISwitch* flashLCancelSwitch; @property(nonatomic) UISlider* sharpnessSlider; @property(nonatomic) UISwitch* onlineSwitch; @property(nonatomic) UISegmentedControl* delayControl;
 @property(nonatomic) UISlider* overlaySlider; @property(nonatomic) UISlider* overlayScaleSlider;
 @property(nonatomic) UIButton* playButton;
 @end
@@ -1209,6 +1209,8 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
   [s addArrangedSubview:[self row:@"Display sync (off = lowest latency, may tear)" symbol:@"waveform.path" control:self.vsyncSwitch]];
   self.widescreenSwitch = [[UISwitch alloc] init]; self.widescreenSwitch.on = self.settings->widescreen; self.widescreenSwitch.onTintColor = kYellow();
   [s addArrangedSubview:[self row:@"Widescreen (16:9)" symbol:@"rectangle.ratio.16.to.9" control:self.widescreenSwitch]];
+  self.flashLCancelSwitch = [[UISwitch alloc] init]; self.flashLCancelSwitch.on = self.settings->flash_failed_lcancel; self.flashLCancelSwitch.onTintColor = kYellow();
+  [s addArrangedSubview:[self row:@"Flash red on failed L-cancel" symbol:@"bolt.fill" control:self.flashLCancelSwitch]];
   self.sharpnessSlider = [[UISlider alloc] init]; self.sharpnessSlider.value = self.settings->sharpness; self.sharpnessSlider.tintColor = kYellow();
   [s addArrangedSubview:[self sliderRow:@"Sharpen" symbol:@"sparkles" slider:self.sharpnessSlider format:@"%.0f%%" scale:100]];
   self.onlineSwitch = [[UISwitch alloc] init]; self.onlineSwitch.on = self.settings->online; self.onlineSwitch.onTintColor = kYellow();
@@ -1526,6 +1528,7 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
   self.settings->upscaler = (int)MAX(0, MIN(2, self.upscalerControl.selectedSegmentIndex));
   self.settings->vsync = self.vsyncSwitch.on;
   self.settings->widescreen = self.widescreenSwitch.on;
+  self.settings->flash_failed_lcancel = self.flashLCancelSwitch.on;
   self.settings->online = self.onlineSwitch.on;
   if (self.delayControl) self.settings->online_delay = [self selectedDelay];
   self.settings->sharpness = self.sharpnessSlider.value;

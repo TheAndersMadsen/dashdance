@@ -327,7 +327,7 @@ API_AVAILABLE(macos(26.0))
 @property(nonatomic) NSStackView* readinessStack; @property(nonatomic) std::string readinessSignature; @property(nonatomic) NSStackView* controllersStack; @property(nonatomic) NSUInteger controllerCount; @property(nonatomic) std::string controllerSignature; @property(nonatomic) unsigned tickCount; @property(nonatomic, copy) NSString* remapGuid; @property(nonatomic) int capturing; @property(nonatomic) BOOL armed; @property(nonatomic) NSArray<NSButton*>* remapButtons;
 // display
 @property(nonatomic) NSSwitch* discordSwitch; @property(nonatomic) NSSwitch* discordRankSwitch; @property(nonatomic) NSTextField* regionLabel;
-@property(nonatomic) NSSegmentedControl* scaleControl; @property(nonatomic) NSSegmentedControl* anisoControl; @property(nonatomic) NSSegmentedControl* upscalerControl; @property(nonatomic) NSSwitch* vsyncSwitch; @property(nonatomic) NSSwitch* fullscreenSwitch; @property(nonatomic) NSSwitch* widescreenSwitch; @property(nonatomic) NSSlider* sharpness; @property(nonatomic) NSSwitch* onlineSwitch; @property(nonatomic) NSSegmentedControl* delayControl;
+@property(nonatomic) NSSegmentedControl* scaleControl; @property(nonatomic) NSSegmentedControl* anisoControl; @property(nonatomic) NSSegmentedControl* upscalerControl; @property(nonatomic) NSSwitch* vsyncSwitch; @property(nonatomic) NSSwitch* fullscreenSwitch; @property(nonatomic) NSSwitch* widescreenSwitch; @property(nonatomic) NSSwitch* flashLCancelSwitch; @property(nonatomic) NSSlider* sharpness; @property(nonatomic) NSSwitch* onlineSwitch; @property(nonatomic) NSSegmentedControl* delayControl;
 - (void)acceptDroppedDisc:(NSString*)path;
 - (void)openEditor:(MUControllerEditor*)editor;
 - (void)play;
@@ -1185,6 +1185,8 @@ static NSButton* pairing_button(NSString* title, NSString* sym, id target, SEL a
   [s addArrangedSubview:[self row:@"Start full screen (lowest latency; ⌥⏎ toggles)" symbol:@"arrow.up.left.and.arrow.down.right" control:self.fullscreenSwitch]];
   self.widescreenSwitch = [self toggle:self.settings->widescreen];
   [s addArrangedSubview:[self row:@"Widescreen (16:9)" symbol:@"rectangle.ratio.16.to.9" control:self.widescreenSwitch]];
+  self.flashLCancelSwitch = [self toggle:self.settings->flash_failed_lcancel];
+  [s addArrangedSubview:[self row:@"Flash red on failed L-cancel" symbol:@"bolt.fill" control:self.flashLCancelSwitch]];
   self.sharpness = [NSSlider sliderWithValue:self.settings->sharpness minValue:0 maxValue:1 target:nil action:nil];
   [s addArrangedSubview:[self sliderRow:@"Sharpen" symbol:@"sparkles" slider:self.sharpness format:@"%.0f%%" scale:100]];
   self.onlineSwitch = [self toggle:self.settings->online];
@@ -1485,6 +1487,7 @@ static NSButton* pairing_button(NSString* title, NSString* sym, id target, SEL a
   self.settings->vsync = self.vsyncSwitch.state == NSControlStateValueOn;
   self.settings->fullscreen = self.fullscreenSwitch.state == NSControlStateValueOn;
   self.settings->widescreen = self.widescreenSwitch.state == NSControlStateValueOn;
+  self.settings->flash_failed_lcancel = self.flashLCancelSwitch.state == NSControlStateValueOn;
   self.settings->online = self.onlineSwitch.state == NSControlStateValueOn;
   if (self.delayControl) self.settings->online_delay = [self selectedDelay];
   self.settings->sharpness = (float)self.sharpness.doubleValue;

@@ -83,43 +83,52 @@ class GeckoSet:
         assert len(self.codehandler) == 4288, "unexpected codehandler.bin"
         self.codes = gecko.load_ini(sys_dir / "GameSettings/GALE01r2.ini")
         self.gct, self.optional_offset = gecko.generate_gct(self.codes)
+        self.gct_options = [gecko.generate_gct(self.codes, {flag for bit, flag in
+                    ((1, "widescreen"), (2, "flash_failed_lcancel")) if mask & bit})[0]
+                    for mask in range(4)]
         self.boot = gecko.parse_gct(self.bootloader, gecko.BOOTLOADER_BASE)
         self.gct_base = gct_base
         self.main = gecko.parse_gct(self.gct, gct_base if gct_base else 0x81900000)
         # Playback: the list a replay carries (served over EXI, installed by the Playback code at
         # `extra_base`) is translated too, so its caves run as compiled code.
         self.extra = gecko.parse_gct(Path(extra_gct).read_bytes(), extra_base) if extra_gct else None
-        # Run-time optional codes: everything the full table adds over the base table.
-        base_gct, _ = gecko.generate_gct(self.codes, include_optional=False)
-        base = gecko.parse_gct(base_gct, gct_base if gct_base else 0x81900000)
-        base_writes = set(base.writes)
-        base_hooks = {h.hook for h in base.hooks}
         flags = [c.optional for c in self.codes if c.enabled and c.optional]
-        self.optional_flag = flags[0] if flags else None
         self.optional_flags = sorted(set(flags))
-        self.optional_write_list = [(a, b) for (a, b) in self.main.writes if (a, b) not in base_writes]
+        self.optional_write_flags = {}
+        optional_hook_flags = {}
+        for code in self.codes:
+            if not code.enabled or not code.optional:
+                continue
+            code_gct, _ = gecko.generate_gct([code])
+            patches = gecko.parse_gct(code_gct, gct_base if gct_base else 0x81900000)
+            for write in patches.writes:
+                if write in self.optional_write_flags:
+                    raise ValueError("overlapping optional Gecko writes")
+                self.optional_write_flags[write] = code.optional
+            for hook in patches.hooks:
+                if hook.hook in optional_hook_flags:
+                    raise ValueError("overlapping optional Gecko hooks")
+                optional_hook_flags[hook.hook] = code.optional
         for h in self.main.hooks:
-            if h.hook not in base_hooks:
-                h.optional = self.optional_flag
+            h.optional = optional_hook_flags.get(h.hook)
         self.optional_text = {}    # addr -> (patched word, flag): translated as both variants
         self.optional_data = []    # (addr, patched bytes, original bytes): applied/restored at run time
 
     def apply(self, dol):
         """Applies the memory writes to the image and collects hooks/caves for translation."""
         text_writes = data_writes = 0
-        optional = set(self.optional_write_list)
         for p in [self.boot, self.main] + ([self.extra] if self.extra else []):
             for addr, blob in p.writes:
                 if not dol.in_ram(addr) or not dol.in_ram(addr + len(blob) - 1):
                     continue
-                if (addr, blob) in optional:
+                if p is self.main and (addr, blob) in self.optional_write_flags:
                     # Left out of the image: text becomes a two-way instruction, data is written at run time.
                     if dol.in_text(addr):
                         assert len(blob) == 4, "optional text patch must be one instruction"
-                        self.optional_text[addr] = (int.from_bytes(blob, "big"), self.optional_flag)
+                        self.optional_text[addr] = (int.from_bytes(blob, "big"), self.optional_write_flags[addr, blob])
                     else:
                         original = bytes(dol.u32(addr + k).to_bytes(4, "big")[0] for k in range(len(blob)))
-                        self.optional_data.append((addr, blob, original))
+                        self.optional_data.append((addr, blob, original, self.optional_write_flags[addr, blob]))
                     continue
                 dol.write_bytes(addr, blob)
                 if dol.in_text(addr):
@@ -153,6 +162,10 @@ def write_gecko_data(out, gs):
     text.append(cbytes("codehandler_bin", gs.codehandler))
     text.append(cbytes("bootloader_gct", gs.bootloader))
     text.append(cbytes("slippi_gct", gs.gct))
+    for mask, table in enumerate(gs.gct_options):
+        text.append(cbytes("slippi_gct_option_%d" % mask, table.ljust(len(gs.gct), b"\0")))
+    text.append("const CodeTable slippi_gct_options[4] = {\n%s\n};\n" %
+                "\n".join("  {slippi_gct_option_%d, slippi_gct_option_%d_size}," % (i, i) for i in range(4)))
     blobs = []
     for i, (addr, blob) in enumerate(gs.boot.writes):
         blobs.append("static const uint8_t boot_write_%d[] = {%s};\n" % (i, ", ".join("0x%02X" % b for b in blob)))
@@ -167,11 +180,11 @@ def write_gecko_data(out, gs):
     text.append("const uint32_t optional_gct_offset = %du;\n" % gs.optional_offset)
     for flag in gs.optional_flags:
         text.append("bool option_%s = false;\n" % flag)
-    for i, (addr, patched, original) in enumerate(gs.optional_data):
+    for i, (addr, patched, original, flag) in enumerate(gs.optional_data):
         text.append("static const uint8_t optional_patched_%d[] = {%s};\nstatic const uint8_t optional_original_%d[] = {%s};\n" % (
             i, ", ".join("0x%02X" % b for b in patched), i, ", ".join("0x%02X" % b for b in original)))
     text.append("const OptionalWrite optional_writes[] = {\n%s\n};\nconst size_t optional_writes_count = %d;\n" % (
-        "\n".join("  {0x%08Xu, %du, optional_patched_%d, optional_original_%d}," % (addr, len(patched), i, i) for i, (addr, patched, original) in enumerate(gs.optional_data)) or "  {0, 0, nullptr, nullptr},",
+        "\n".join("  {0x%08Xu, %du, optional_patched_%d, optional_original_%d, &option_%s}," % (addr, len(patched), i, i, flag) for i, (addr, patched, original, flag) in enumerate(gs.optional_data)) or "  {0, 0, nullptr, nullptr, nullptr},",
         len(gs.optional_data)))
     text.append("}\n")
     return write_if_changed(out / "gecko_data.cpp", "".join(text))
@@ -273,10 +286,11 @@ def main():
         changed += write_if_changed(out / "gecko_data.cpp", "// Generated: no Slippi code tables (translated with --no-slippi).\n#include \"gecko_data.h\"\nnamespace gecko {\n"
                                     "const uint8_t codehandler_bin[1] = {0}; const size_t codehandler_bin_size = 0;\nconst uint8_t bootloader_gct[1] = {0}; const size_t bootloader_gct_size = 0;\n"
                                     "const uint8_t slippi_gct[1] = {0}; const size_t slippi_gct_size = 0;\n"
+                                    "const CodeTable slippi_gct_options[4] = {}; bool option_flash_failed_lcancel = false;\n"
                                     "const Write boot_writes[1] = {{0, 0, nullptr}}; const size_t boot_writes_count = 0;\n"
                                     "const HookInstall boot_hooks[1] = {{0, 0, 0}}; const size_t boot_hooks_count = 0;\nconst uint32_t gct_base_used = 0;\n"
                                     "const uint32_t optional_gct_offset = 0; bool option_widescreen = false;\n"
-                                    "const OptionalWrite optional_writes[1] = {{0, 0, nullptr, nullptr}}; const size_t optional_writes_count = 0;\n}\n")
+                                    "const OptionalWrite optional_writes[1] = {{0, 0, nullptr, nullptr, nullptr}}; const size_t optional_writes_count = 0;\n}\n")
 
     # Prototypes for every function.
     text = ["// Generated by port/recomp/recomp.py. Do not edit.\n#pragma once\n#include \"ppc.h\"\n",
