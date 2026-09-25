@@ -187,6 +187,7 @@ class MetalBackend final : public Backend {
   void set_options(const MetalOptions& o) {
     const bool rescale = o.efb_scale != opts_.efb_scale || o.ssaa != opts_.ssaa || o.widescreen != opts_.widescreen || o.upscaler != opts_.upscaler;
     const bool resample = o.anisotropy != opts_.anisotropy;
+    if (o.efb_scale != opts_.efb_scale) backlog_scale_cap_ = 0;
     opts_ = o;
 #if TARGET_OS_OSX
     layer_.displaySyncEnabled = opts_.vsync;
@@ -197,6 +198,13 @@ class MetalBackend final : public Backend {
   uint64_t frames_presented() const { return frames_presented_; }
   void log_scale_change() const { host::log("metal: internal resolution now %ux%u (EFB x%d)", EFB_WIDTH * scale_, EFB_HEIGHT * scale_, scale_); }
   void set_overlay(OverlayProvider provider) { overlay_ = std::move(provider); }
+  void reduce_backlog_scale() {
+    if (scale_ <= 6) return;
+    backlog_scale_cap_ = 6;
+    if (pick_scale() == scale_) return;
+    wait_idle(); efb_copies_.clear(); create_efb();
+    host::log("metal: render backlog; reduced internal resolution to EFB x%d", scale_);
+  }
 
  private:
   // ---- setup
@@ -290,14 +298,15 @@ class MetalBackend final : public Backend {
     int cap = max_scale;
     if (const int d = g_device_scale_cap.load(std::memory_order_relaxed)) cap = std::min(cap, d);
     if (const int t = g_thermal_scale_cap.load(std::memory_order_relaxed)) cap = std::min(cap, t);
-    if (opts_.efb_scale > 0) return std::clamp(std::min(opts_.efb_scale, cap) * ssaa, 1, max_scale);
+    const int fallback_cap = backlog_scale_cap_ ? backlog_scale_cap_ : max_scale;
+    if (opts_.efb_scale > 0) return std::min(std::clamp(std::min(opts_.efb_scale, cap) * ssaa, 1, max_scale), fallback_cap);
     float ww = (float)std::max(client_w_, 1), wh = (float)std::max(client_h_, 1);
     float aspect = output_aspect();
     float vw = ww, vh = ww / aspect;
     if (vh > wh) { vh = wh; vw = wh * aspect; }
     if (fx_wanted()) { vw *= 0.5f; vh *= 0.5f; }   // MetalFX reconstructs to the window size at present
     int s = std::max((int)std::ceil(vw / (480.0f * aspect)), (int)std::ceil(vh / 480.0f));
-    return std::clamp(std::min(s, cap) * ssaa, 1, max_scale);
+    return std::min(std::clamp(std::min(s, cap) * ssaa, 1, max_scale), fallback_cap);
   }
 
   void create_efb() {
@@ -1321,7 +1330,7 @@ class MetalBackend final : public Backend {
   int fx_quality_ = -1;
   bool fx_supported_ = false, fx_reported_ = false;
   bool efb_needs_clear_ = true, skip_present_ = false, ring_full_logged_ = false, pending_capture_ = false;
-  int scale_ = 1, efb_w_ = EFB_WIDTH, efb_h_ = EFB_HEIGHT, slot_ = 0;
+  int scale_ = 1, efb_w_ = EFB_WIDTH, efb_h_ = EFB_HEIGHT, slot_ = 0, backlog_scale_cap_ = 0;
   uint64_t frame_counter_ = 0, frames_presented_ = 0, backend_id_ = (uint64_t)(uintptr_t)this;
   std::atomic<int> shader_failures_{0}; int draws_this_frame_ = 0;
   bool async_compile_ = [] { const char* e = std::getenv("MELEE_METAL_SYNC_COMPILE"); return !(e && *e && *e != '0'); }();
@@ -1384,6 +1393,7 @@ class MetalThreaded final : public Backend {
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
     host::thread_realtime("render", 4.0);
     uint64_t drained = 0, executed = 0;
+    unsigned skipped_in_a_row = 0, overloaded_frames = 0;
     try {
       Frame frame;
       for (;;) {
@@ -1394,11 +1404,18 @@ class MetalThreaded final : public Backend {
         }
         apply_pending();
         const size_t backlog = queue_.size();
-        if (backlog > 0) {
+        if (backlog > 0 && ++skipped_in_a_row < 8) {
           inner_->set_skip_present(true); inner_->submit_frame(frame); inner_->set_skip_present(false);
           if (++drained == 1 || drained % 300 == 0) host::log("renderer: display stalled; drained a backlog of %zu frames without presenting (%llu so far)", backlog + 1, (unsigned long long)drained);
         } else {
           inner_->submit_frame(frame);
+          skipped_in_a_row = 0;
+        }
+        if (backlog < 8) {
+          overloaded_frames = 0;
+        } else if (++overloaded_frames >= 8) {
+          inner_->reduce_backlog_scale();
+          overloaded_frames = 0;
         }
         ++executed;
         frames_presented_.store(inner_->frames_presented());

@@ -5,6 +5,7 @@ Details and evidence for each are in `docs/MAC_FIXES.md`.
 
 ## Fixes
 
+- Keep the game visible on M1 Pro when 8x internal resolution overwhelms Metal: present periodically while catching up and fall back to 6x after sustained backlog.
 - Read the GameCube adapter when macOS rejects timed reads on its interrupt pipe (it was never read at all on this Mac).
 - Quit with Cmd+Q from full screen.
 - Show the adapter's measured polling rate in the HUD instead of rounding anything under 900 Hz to "125 Hz".
