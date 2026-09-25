@@ -17,6 +17,7 @@ A fix counts as confirmed once it has been played through again.
 
 | # | What was wrong | Fix | Commit |
 |---|---|---|---|
+| 9 | On macOS 27, Esc-menu Volume muted music at 0%, but jukebox music stayed at full level from 10% upward: the mixer scaled game samples before adding music at its own gain. | Apply the master volume to the jukebox contribution on Mac and Windows. A synthetic HPS track tests 0%, 10%, 50%, 100% and independent Music gain; the player confirmed the live fix. | see git log |
 | 1 | GameCube adapter never read on this Mac: `ReadPipeTO` on the interrupt pipe returns `kIOReturnBadArgument`, so the reader thread gave up after 20 failures. | Fall back to blocking `ReadPipe` when timed reads are rejected; abort the pipe on close so the blocking read wakes. | see git log |
 | 2 | No way to quit from full screen except the Dock. | Cmd+Q requests exit from the SDL event loop. | see git log |
 | 3 | HUD showed any adapter rate below 900 Hz as "125 Hz" (the Mayflash overclocks to ~540 Hz). | Show the measured rate. | see git log |
