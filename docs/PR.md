@@ -7,6 +7,7 @@ Details and evidence for each are in `docs/MAC_FIXES.md`.
 
 - Read the GameCube adapter when macOS rejects timed reads on its interrupt pipe (it was never read at all on this Mac).
 - Quit with Cmd+Q from full screen.
+- Route Mac Quit menus through game shutdown so Cmd+Q during play does not abort while workers are running.
 - Show the adapter's measured polling rate in the HUD instead of rounding anything under 900 Hz to "125 Hz".
 - Keep the launcher from crashing when a replay's player name isn't valid UTF-8.
 - Fix desyncs against Dolphin players when UCF's shield drop fires. The Gecko code returns past its call site
