@@ -16,5 +16,5 @@ void set_melee_volume(uint8_t volume);                  // CMD_CHANGE_MUSIC_VOLU
 void set_user_volume(int percent);                      // PC settings "Music" (0..100)
 int user_volume();
 // Mixes `frames` stereo 32 kHz samples into `out` (adds to what is there). Audio-thread safe.
-void mix(int16_t* out, size_t frames);
+void mix(int16_t* out, size_t frames, int master_volume);
 }  // namespace slippi::jukebox
