@@ -136,7 +136,7 @@ bool ensure_dir(const std::string& path, const char* what) {
 // launcher.ini: what the dashboard chose, also rewritten at exit when the in-game menu changed something.
 static void save_launcher_ini(const fs::path& path, const host::LauncherSettings& settings) {
   std::ofstream out(path, std::ios::trunc);
-  out << "iso=" << settings.iso << "\nwidescreen=" << (settings.widescreen ? 1 : 0) << "\nonline=" << (settings.online ? 1 : 0)
+  out << "iso=" << settings.iso << "\nwidescreen=" << (settings.widescreen ? 1 : 0) << "\nflash_failed_lcancel=" << (settings.flash_failed_lcancel ? 1 : 0) << "\nonline=" << (settings.online ? 1 : 0)
       << "\nsharpness=" << settings.sharpness << "\noverlay=" << settings.overlay_opacity << "\noverlay_scale=" << settings.overlay_scale
       << "\nscale=" << settings.scale << "\nanisotropy=" << settings.anisotropy << "\nupscaler=" << settings.upscaler << "\nvsync=" << (settings.vsync ? 1 : 0)
       << "\nfullscreen=" << (settings.fullscreen ? 1 : 0) << "\nvolume=" << settings.volume << "\nhud=" << (settings.hud ? 1 : 0)
@@ -252,6 +252,7 @@ int main(int argc, char** argv) {
       auto value = [&](const char* key) -> const char* { size_t n = std::strlen(key); return line.compare(0, n, key) == 0 ? line.c_str() + n : nullptr; };
       if (const char* v = value("iso=")) settings.iso = v;
       else if (const char* v = value("widescreen=")) settings.widescreen = *v == '1';
+      else if (const char* v = value("flash_failed_lcancel=")) settings.flash_failed_lcancel = *v == '1';
       else if (const char* v = value("online=")) settings.online = *v == '1';
       else if (const char* v = value("online_delay=")) settings.online_delay = std::clamp(std::atoi(v), 1, 9);
       else if (const char* v = value("sharpness=")) settings.sharpness = std::clamp((float)std::atof(v), 0.0f, 1.0f);
@@ -370,6 +371,7 @@ int main(int argc, char** argv) {
   }
 
   gecko::option_widescreen = gfx.widescreen;   // before the game loads the code table
+  gecko::option_flash_failed_lcancel = settings.flash_failed_lcancel;
   gx::Backend* backend = nullptr;
   bool audio_opened = false;
   int code = 0;
@@ -389,7 +391,7 @@ int main(int argc, char** argv) {
       host::RuntimeSettings rs;
       rs.scale = gfx.efb_scale; rs.anisotropy = gfx.anisotropy; rs.sharpness = gfx.sharpness; rs.upscaler = gfx.upscaler; rs.widescreen = gfx.widescreen; rs.vsync = gfx.vsync;
       rs.volume = std::clamp(volume, 0, 100); rs.overlay_opacity = settings.overlay_opacity; rs.overlay_scale = settings.overlay_scale;
-      rs.hud = settings.hud; rs.fullscreen = settings.fullscreen || fullscreen_arg; rs.online_delay = online.delay;
+      rs.hud = settings.hud; rs.fullscreen = settings.fullscreen || fullscreen_arg; rs.online_delay = online.delay; rs.flash_failed_lcancel = settings.flash_failed_lcancel;
       host::menu_init(rs, [backend, &gfx](const host::RuntimeSettings& s, host::MenuChange what) {
         switch (what) {
           case host::MenuChange::Graphics: gfx.efb_scale = s.scale; gfx.anisotropy = s.anisotropy; gfx.sharpness = s.sharpness; gfx.upscaler = s.upscaler; gfx.vsync = s.vsync; gx::metal_set_options(backend, gfx); break;
@@ -397,7 +399,7 @@ int main(int argc, char** argv) {
           case host::MenuChange::TouchControls: host::touch_set_opacity(s.overlay_opacity); host::touch_set_scale(s.overlay_scale); break;
           case host::MenuChange::Fullscreen: host::window_set_fullscreen(s.fullscreen); break;
           case host::MenuChange::OnlineDelay: slippi::online::config().delay = s.online_delay; host::log("slippi: online input delay now %d frame%s, from the next match", s.online_delay, s.online_delay == 1 ? "" : "s"); break;
-          case host::MenuChange::Hud: case host::MenuChange::Widescreen: break;
+          case host::MenuChange::Hud: case host::MenuChange::Widescreen: case host::MenuChange::FailedLCancelFlash: break;
         }
       });
     }
@@ -456,7 +458,7 @@ int main(int argc, char** argv) {
   if (host::menu_changed() && !std::getenv("MELEE_PAD_FILE") && !std::getenv("MELEE_MENU_OPEN")) {   // remembered, except for scripted test runs
     const host::RuntimeSettings rs = host::menu_settings();
     settings.scale = rs.scale; settings.anisotropy = rs.anisotropy; settings.sharpness = rs.sharpness; settings.upscaler = rs.upscaler; settings.widescreen = rs.widescreen; settings.vsync = rs.vsync;
-    settings.volume = rs.volume; settings.overlay_opacity = rs.overlay_opacity; settings.overlay_scale = rs.overlay_scale; settings.hud = rs.hud; settings.fullscreen = rs.fullscreen;
+    settings.volume = rs.volume; settings.overlay_opacity = rs.overlay_opacity; settings.overlay_scale = rs.overlay_scale; settings.hud = rs.hud; settings.fullscreen = rs.fullscreen; settings.flash_failed_lcancel = rs.flash_failed_lcancel;
     if (!delay_arg) settings.online_delay = rs.online_delay;   // a one-off --online-delay is not saved as the player's setting
     if (settings.iso.empty()) settings.iso = iso_arg;
     std::error_code ec; if (fs::is_directory(support, ec)) save_launcher_ini(remembered, settings);

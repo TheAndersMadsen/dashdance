@@ -21,6 +21,7 @@ Details and evidence for each are in `docs/MAC_FIXES.md`.
 ## Features
 
 - Show live ping in the performance HUD during online matches.
+- Let players opt into Slippi's red flash on failed L-cancels from the Apple dashboards, with an in-game setting saved for the next launch.
 
 ## Logging
 

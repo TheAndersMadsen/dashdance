@@ -179,13 +179,9 @@ void configure_commands(const uint8_t* payload, uint8_t length) {
   host::log("slippi: recording command sizes configured (%zu commands)", g_record_sizes.size());
 }
 
-// Run-time optional codes sit at the end of the table; ending the table early hides them from
-// the in-game code handler (which re-applies the table every frame), restoring it shows them.
-void terminate_optional_codes(uint8_t* table) {
-  uint32_t off = gecko::optional_gct_offset;
-  if (off + 8 > gecko::slippi_gct_size) return;
-  table[off] = 0xFF; table[off + 1] = 0; table[off + 2] = 0; table[off + 3] = 0;
-  table[off + 4] = 0; table[off + 5] = 0; table[off + 6] = 0; table[off + 7] = 0;
+const gecko::CodeTable& selected_gct() {
+  return gecko::slippi_gct_options[(gecko::option_widescreen ? 1 : 0) |
+                                    (gecko::option_flash_failed_lcancel ? 2 : 0)];
 }
 
 std::atomic<int> g_widescreen_request{-1};
@@ -194,29 +190,31 @@ void apply_widescreen(bool on) {
   gecko::option_widescreen = on;
   if (g_gct_address) {
     uint8_t* table = host::ptr(g_gct_address, (uint32_t)gecko::slippi_gct_size);
-    std::memcpy(table + gecko::optional_gct_offset, gecko::slippi_gct + gecko::optional_gct_offset, gecko::slippi_gct_size - gecko::optional_gct_offset);
-    if (!on) terminate_optional_codes(table);
+    const gecko::CodeTable& selected = selected_gct();
+    std::memcpy(table + gecko::optional_gct_offset, selected.data + gecko::optional_gct_offset,
+                selected.size - gecko::optional_gct_offset);
   }
   for (size_t i = 0; i < gecko::optional_writes_count; ++i) {
     const gecko::OptionalWrite& w = gecko::optional_writes[i];
-    std::memcpy(host::ptr(w.addr, w.size), on ? w.patched : w.original, w.size);
+    if (w.enabled == &gecko::option_widescreen)
+      std::memcpy(host::ptr(w.addr, w.size), on ? w.patched : w.original, w.size);
   }
   host::log("slippi: widescreen 16:9 %s", on ? "on" : "off");
 }
 
 void prepare_gct_length() {
   DmaResponse response;
-  append_u32(response.bytes, (uint32_t)gecko::slippi_gct_size);
+  append_u32(response.bytes, (uint32_t)selected_gct().size);
   g_response = std::move(response);
 }
 
 void prepare_gct_load(const uint8_t* payload) {
   DmaResponse response;
   g_gct_address = be32(payload);
-  host::log("slippi: game loads the GCT (%zu bytes) at %08X%s", gecko::slippi_gct_size, g_gct_address,
+  const gecko::CodeTable& selected = selected_gct();
+  host::log("slippi: game loads the GCT (%zu bytes) at %08X%s", selected.size, g_gct_address,
             gecko::gct_base_used == g_gct_address ? "" : " (recompile with --gct-base to translate C0 caves at this address)");
-  response.bytes.insert(response.bytes.end(), gecko::slippi_gct, gecko::slippi_gct + gecko::slippi_gct_size);
-  if (!gecko::option_widescreen) terminate_optional_codes(response.bytes.data());
+  response.bytes.insert(response.bytes.end(), selected.data, selected.data + selected.size);
   g_response = std::move(response);
 }
 
