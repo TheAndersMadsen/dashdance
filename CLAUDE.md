@@ -116,6 +116,24 @@ committed; the disc stays where it is.
 
 ## Verification checklist for a change
 
+### iPhone Duo skills
+
+For iPhone Duo implementation, testing or review, read
+[iphone-duo-readiness](.agents/skills/iphone-duo-readiness/SKILL.md) first and use
+[the project workflow](docs/IPHONE_DUO.md). For the Metal game, touch controls, HUD or viewport, also read
+[iphone-duo-games](.agents/skills/iphone-duo-games/SKILL.md) and
+[iphone-duo-adaptive-layout](.agents/skills/iphone-duo-adaptive-layout/SKILL.md).
+For the UIKit dashboard, controller editor or other visible UI, also read
+[iphone-duo-design-review](.agents/skills/iphone-duo-design-review/SKILL.md).
+Load the other installed Duo skills when the workflow's routing table applies.
+
+Check API spellings, coordinate spaces and availability against the installed SDK before implementing examples;
+the imported skills are guidance, not proof that a layout works. Preserve Melee's gameplay and chosen aspect ratio,
+the shared game rectangle, point-sized controls and nonblocking simulation thread. Record actual simulator evidence
+for each tested display/pose and mark untested cases explicitly. Do not claim Duo readiness from a successful build alone.
+
+### Checks
+
 1. Build the target you touched (macOS at least; iOS if you touched shared UI or Metal).
 2. Run a scripted match and confirm `late` frames stay at zero (see the scripts described in
    `docs/PERFORMANCE.md`).

@@ -47,6 +47,8 @@ All in `tools/mac/`, written up for agents in the `fix-logs` skill (`desync.md`,
 - `crashram.py`: shows what a crash's broken object is and what points at it.
 - `slp.py`: small replay reader the others share.
 
+- Add project-local iPhone Duo skills, shared references and a UIKit/Metal workflow with explicit simulator verification requirements.
+
 ## Before opening
 
 - Drop the "Fork workflow" section from `CLAUDE.md`, `.agents/skills/fix-logs`, `.claude/skills/fix-logs` and this file.

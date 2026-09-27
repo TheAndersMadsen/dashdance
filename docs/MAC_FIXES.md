@@ -7,6 +7,13 @@ How the loop works: play, then run `/fix-logs`. It reads the session logs and cr
 reviewed, logs what broke here, fixes it one commit at a time, rebuilds, and adds a bullet to `docs/PR.md`.
 A fix counts as confirmed once it has been played through again.
 
+## Development tooling
+
+- 2026-09-27: Installed the ten MIT-licensed iPhone Duo skills at upstream revision
+  `b8b9d15b4dc987d0c35940265e07f4128ba79361`, with shared references and Claude Code symlinks.
+  `CLAUDE.md` routes Duo work through the [UIKit/Metal workflow](IPHONE_DUO.md).
+  Validated upstream file equality, skill metadata and local links; this changes guidance, not runtime code.
+
 ## Open issues
 
 | # | Found | What happens | Evidence | Notes |

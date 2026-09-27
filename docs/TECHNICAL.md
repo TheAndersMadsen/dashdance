@@ -21,8 +21,11 @@ The app follows Apple's [iPhone Duo guidelines](https://developer.apple.com/desi
 - **Text always fits.** `MELEE_TEXT_AUDIT=1` (Mac, iPhone, iPad, Vision Pro) logs any text that is clipped, overflows its window or crowds the rounded ends of its capsule; the in-game overlay shrinks lines to fit instead. It found the clipped player badge and a squeezed Configure button on iPhone, both fixed.
 - **Resizable.** `UIRequiresFullScreen` is off, so the app works in Split View on the inner display and in iPadOS windows.
 - **SDK.** Apps built before the iOS 27.1 SDK run at a smaller compatible size on iPhone Duo. `setup.sh` prints a note when the
-  installed Xcode is older; build with Xcode 27.1 or later for the full fit. The reserved-region and hinge APIs (iOS 27.1) are not
-  used yet because this tree still builds with the iOS 26 SDK, and nothing has been run on an iPhone Duo or its simulator yet.
+  installed Xcode is older; build with Xcode 27.1 or later for the full fit. The current host includes reserved-region and
+  hinge handling in `window_fold_apple.mm` and division-region handling in the dashboard. A build with Xcode 27.1 launched
+  on the iOS 27.1 iPhone Duo simulator on 2026-09-27; the full pose matrix remains unverified.
+
+Use the installed skills and evidence checklist in [iPhone Duo development workflow](IPHONE_DUO.md) for further work.
 
 ### Latency on iPhone, iPad and Vision Pro
 
