@@ -41,6 +41,7 @@ bool g_device_open = false, g_interface_open = false;
 uint8_t g_pipe_in = 0, g_pipe_out = 0;
 std::thread g_thread;
 std::atomic<bool> g_running{false};
+std::atomic<bool> g_shutting_down{false};
 std::mutex g_mutex;
 uint8_t g_report[37] = {};
 bool g_have_report = false;
@@ -202,7 +203,11 @@ bool open_adapter() {
   g_thread = std::thread(reader_thread);
   log("gc adapter: reader thread started");
   static std::once_flag shutdown_once;
-  std::call_once(shutdown_once, [] { std::atexit([] { close_adapter(); }); });
+  std::call_once(shutdown_once, [] { std::atexit([] {
+    g_shutting_down.store(true);
+    close_adapter();
+    if (g_thread.joinable()) { log("gc adapter: detaching stray reader"); g_thread.detach(); }
+  }); });
   return true;
 }
 
@@ -212,6 +217,7 @@ bool open_adapter() {
 uint32_t gcadapter_poll(PadState out[4]) {
   auto now = std::chrono::steady_clock::now();
   if (!g_interface || !g_running.load()) {
+    if (g_shutting_down.load()) return 0;
     if (g_interface && !g_running.load()) close_adapter();
     if (now < g_next_scan) return 0;
     g_next_scan = now + std::chrono::seconds(2);
