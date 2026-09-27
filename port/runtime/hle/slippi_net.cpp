@@ -68,9 +68,19 @@ static void wakeup_thread(ENetHost* host) {
   ENetBuffer buf; buf.data = &byte; buf.dataLength = 1;
   enet_socket_send(host->socket, &address, &buf, 1);
 }
+// MELEE_NET_DROP_CONNECT=1: test aid for one-way NATs. Incoming ENet CONNECT commands are discarded, so the opponent's
+// outgoing attempt never completes and only this side's outgoing connection forms (docs/MAC_FIXES.md issue 9).
+static int ENET_CALLBACK drop_connect_callback(ENetHost* host, ENetEvent*) {
+  const enet_uint8* d = host->receivedData; const size_t n = host->receivedDataLength;
+  if (n < 6) return 0;
+  const enet_uint16 peer_id = (enet_uint16)(d[0] << 8 | d[1]);
+  const size_t header = (peer_id & ENET_PROTOCOL_HEADER_FLAG_SENT_TIME) ? 4 : 2;
+  return (d[header] & ENET_PROTOCOL_COMMAND_MASK) == ENET_PROTOCOL_COMMAND_CONNECT ? 1 : 0;   // 1 = swallow the datagram
+}
 static int ENET_CALLBACK intercept_callback(ENetHost* host, ENetEvent* event) {
   if (host->receivedDataLength == 1 && host->receivedData[0] == 0) { event->type = (ENetEventType)42; return 1; }
-  return 0;
+  static const bool drop_connects = std::getenv("MELEE_NET_DROP_CONNECT") != nullptr;
+  return drop_connects ? drop_connect_callback(host, event) : 0;
 }
 // One line per ENet peer event. Every mid-game drop seen so far came 30 to 32 s after connecting, which is ENet's cap
 // for a peer whose reliable commands were never acknowledged; these lines say which peer that was (the outgoing
@@ -203,6 +213,7 @@ NetplayClient::NetplayClient(std::vector<std::string> addrs, std::vector<uint16_
     local = &local_addr;
   }
   client_ = enet_host_create(local, 10, 3, 0, 0);
+  if (client_ && std::getenv("MELEE_NET_DROP_CONNECT")) { client_->intercept = drop_connect_callback; host::log("slippi: test aid: incoming ENet connects are dropped"); }
   if (!client_) { host::log("slippi: cannot create ENet client"); status_.store(ConnectStatus::FAILED); return; }
   prioritize_socket(client_->socket);
   for (int i = 0; i < remote_player_count; ++i) {
@@ -500,6 +511,22 @@ void NetplayClient::ThreadFunc() {
       net_diag::on_queue_depth(async_queue_.size());
     }
     net_diag::maybe_sample(time_us());
+    {   // every 5 s: is each peer's reliable channel being acknowledged? (issue 9: the connection in use times out at 30 s)
+      static uint64_t last_health_ms = 0;
+      const uint64_t now_ms = time_ms();
+      if (now_ms - last_health_ms >= 5000) {
+        last_health_ms = now_ms;
+        for (size_t i = 0; i < client_->peerCount; ++i) {
+          ENetPeer* p = &client_->peers[i];
+          if (p->state == ENET_PEER_STATE_DISCONNECTED) continue;
+          bool in_use = false; for (auto* sp : server_) if (sp == p) in_use = true;
+          host::log("slippi: peer health: slot %zu state %d rtt %u ms lost %u unacked reliable %zu (oldest %u ms) queued reliable %zu last-recv %u ms ago%s",
+                    i, (int)p->state, p->roundTripTime, p->packetsLost, enet_list_size(&p->sentReliableCommands),
+                    p->earliestTimeout ? client_->serviceTime - p->earliestTimeout : 0, enet_list_size(&p->outgoingReliableCommands),
+                    p->lastReceiveTime ? client_->serviceTime - p->lastReceiveTime : 0, in_use ? " (in use)" : "");
+        }
+      }
+    }
     if (net <= 0) continue;
     switch (ev.type) {
       case ENET_EVENT_TYPE_RECEIVE: {
@@ -512,7 +539,19 @@ void NetplayClient::ThreadFunc() {
         std::string key = peer_key(ev.peer);
         { bool in_use = false; for (auto* sp : server_) if (sp == ev.peer) in_use = true; log_peer(ev.data ? "disconnected by the opponent" : "timed out or closed", client_, ev.peer, in_use, ev.data); }
         if (active_connections_.count(key) && active_connections_[key].count(ev.peer)) active_connections_[key][ev.peer].is_disconnected = true;
+        // A player is gone when no connected peer of theirs is left under any address, not when the peers under this
+        // one address are. Both sides dial each other, and the opponent's real port can differ from the one matchmaking
+        // advertised (their router remaps it): our own attempt to the advertised port then sits alone under its own
+        // address, never connects, and expires at ENet's 30 s cap. Judged by address, that expiry marked the player
+        // inactive and the loop above closed the healthy connection 30 s into the game (docs/MAC_FIXES.md issue 9).
         bool all_peers_gone = AreAllPeersDisconnectedForKey(key);
+        if (all_peers_gone && active_connections_.count(key) && active_connections_[key].count(ev.peer)) {
+          const uint8_t player = active_connections_[key][ev.peer].player_idx;
+          for (auto& conn : active_connections_)
+            for (auto& other : conn.second)
+              if (other.second.player_idx == player && !other.second.is_disconnected && other.first->state == ENET_PEER_STATE_CONNECTED) all_peers_gone = false;
+          if (!all_peers_gone) host::log("slippi: a connection attempt to %x:%u expired; the player is still connected on another address", ev.peer->address.host, ev.peer->address.port);
+        }
         if (all_peers_gone && active_connections_.count(key) && active_connections_[key].count(ev.peer))
           player_active_[active_connections_[key][ev.peer].player_idx].store(false, std::memory_order_release);
         bool connected_client = false;

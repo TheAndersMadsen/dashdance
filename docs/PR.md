@@ -25,6 +25,10 @@ Details and evidence for each are in `docs/MAC_FIXES.md`.
 
 - The headless executable links again (it called Discord presence, which only the app has).
 
+- A pipeline waiting in the boot-time precompile queue is compiled at once when a draw needs it. With a cold shader cache (after every app update) characters stayed invisible for up to a minute and a half while 900 pipelines compiled one at a time.
+
+- Online games no longer end 30 s after connecting when the opponent's real port differs from the advertised one: an expired connection attempt under another address no longer marks the player as gone (docs/MAC_FIXES.md fix 14).
+
 ## Features
 
 - Show live ping in the performance HUD during online matches.
@@ -70,6 +74,8 @@ All in `tools/mac/`, written up for agents in the `fix-logs` skill (`desync.md`,
 - Correct Retina scaling and camera-region edge projection so Duo touch controls use the actual safe area.
 
 - Redesign the iOS dashboard around immediate Play access, safe-area/fold-aware columns, readable settings and compact Melee branding.
+
+- `slippi: peer health` every 5 s (unacknowledged reliable commands per ENet peer) and `MELEE_NET_DROP_CONNECT=1` (ignore incoming ENet connects, a one-way NAT) for netplay connection tests with `--local-peer`.
 
 ## Before opening
 
