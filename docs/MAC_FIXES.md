@@ -56,3 +56,12 @@ that frame; reading the translated `ftCo_80099794` next to the UCF cave found th
 
 - `install.sh` does not work as-is: its `--depth 1` clone lacks the upstream commit `bootstrap_port.py` checks, and `setup.sh` clones doldecomp/melee at HEAD instead of the pinned revision. Workaround: full clone, and `git -C deps/melee checkout 05a1394faea2aac458e4bdd030621d8a5631ae62`.
 - 1000 Hz polling without a driver (the README claim) did not work here: `SetPipePolicy` is rejected, and with no driver Apple's HID driver owns the adapter exclusively. The legacy GCAdapterDriver.kext (Permissive Security, SIP off) gives ~540 Hz, which looks like the Mayflash hardware cap.
+
+## iPhone Duo reserved-region correction — 2026-09-27
+
+The Apple window bridge calculated pixel scale from output slots immediately after clearing them,
+so safe-area and fold geometry stayed at 1× on Retina displays. It also projected each camera region
+onto every edge, potentially consuming most of the touch-control area. Derive scale from the Metal
+view and drawable, intersect camera regions with the view, and reserve only their nearest edge beyond
+the existing safe inset. Verified with seven 3× geometry cases and successful iOS simulator/macOS
+builds. Live fold transitions and camera avoidance across all poses remain unverified.

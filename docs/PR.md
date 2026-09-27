@@ -49,6 +49,8 @@ All in `tools/mac/`, written up for agents in the `fix-logs` skill (`desync.md`,
 
 - Add project-local iPhone Duo skills, shared references and a UIKit/Metal workflow with explicit simulator verification requirements.
 
+- Correct Retina scaling and camera-region edge projection so Duo touch controls use the actual safe area.
+
 ## Before opening
 
 - Drop the "Fork workflow" section from `CLAUDE.md`, `.agents/skills/fix-logs`, `.claude/skills/fix-logs` and this file.
