@@ -15,9 +15,11 @@ The app follows Apple's [iPhone Duo guidelines](https://developer.apple.com/desi
   centred on the display so it is symmetric about the fold, with a thin yellow keyline around the picture.
 - **Same sizes on both displays.** Touch-control clusters are capped at 440 pt tall and sit low, within thumb reach; the in-game
   menu uses 18 pt lines and every overlay string shrinks to fit its box instead of overflowing.
-- **Size classes, not devices.** The dashboard switches to two columns in a regular-width environment at least 800 pt wide and
-  centres the columns on the display, not the safe area, so the gap between them sits on the fold even when system controls run
-  along one edge. The controller editor goes side by side in landscape. Nothing reads a global main screen.
+- **Size classes and available space.** The dashboard uses a compact mark and title with Play at the top of the first
+  column. Foreground cards use the full safe width, including asymmetric side insets; the grid background remains full-bleed.
+  A regular-width environment gets two columns when two readable 300 pt cards and a 24 pt gap fit. An active vertical
+  division region sets the actual column widths and gap. Settings controls with several choices occupy their own line;
+  internal resolution uses a native menu. The controller editor goes side by side when space allows.
 - **Text always fits.** `MELEE_TEXT_AUDIT=1` (Mac, iPhone, iPad, Vision Pro) logs any text that is clipped, overflows its window or crowds the rounded ends of its capsule; the in-game overlay shrinks lines to fit instead. It found the clipped player badge and a squeezed Configure button on iPhone, both fixed.
 - **Resizable.** `UIRequiresFullScreen` is off, so the app works in Split View on the inner display and in iPadOS windows.
 - **SDK.** Apps built before the iOS 27.1 SDK run at a smaller compatible size on iPhone Duo. `setup.sh` prints a note when the

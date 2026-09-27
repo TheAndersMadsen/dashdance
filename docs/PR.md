@@ -51,6 +51,8 @@ All in `tools/mac/`, written up for agents in the `fix-logs` skill (`desync.md`,
 
 - Correct Retina scaling and camera-region edge projection so Duo touch controls use the actual safe area.
 
+- Redesign the iOS dashboard around immediate Play access, safe-area/fold-aware columns, readable settings and compact Melee branding.
+
 ## Before opening
 
 - Drop the "Fork workflow" section from `CLAUDE.md`, `.agents/skills/fix-logs`, `.claude/skills/fix-logs` and this file.

@@ -65,6 +65,44 @@ Check SDK guards as well as runtime availability when supporting older toolchain
 
 This is a launch baseline, not a completed Duo readiness audit.
 
+## Dashboard redesign — 2026-09-27
+
+Read all ten installed skills before the redesign. Readiness, design review, adaptive layout,
+dual-pane patterns and games informed the changes; the vertical-bars and hinge/scenes review
+confirmed that the current custom dashboard and SDL scene owner should remain. Camera capture,
+Flutter and React Native instructions do not apply to this native UIKit/Metal client.
+
+The dashboard now puts Play and disc/controller setup first, with a compact identity header.
+Regular-width windows fit two readable columns inside the asymmetric safe area; active vertical
+fold regions set their gap and widths. Settings use full-width controls and a native resolution
+menu. Section headers and recent-game titles wrap; cards retain a minimum corner radius.
+Entrance and Play animations respect Reduce Motion. The launcher's display information comes
+from its own window scene.
+
+The Xcode App Resizability audit confirmed a launch screen, all four iPad orientations and
+`UIRequiresFullScreen=false`. SDL owns the existing scene lifecycle. The separate `apple_power.mm`
+global-screen fallback remains deferred: power setup currently precedes SDL window creation, so
+removing that fallback requires lifecycle sequencing and display-change handling.
+
+Validation used Xcode 27.1 / iOS 27.1 SDK, deployment target iOS 17. Both `setup.sh --ios`
+and `tools/mac/rebuild.sh` passed. Screenshots/logs are in local `reports/duo-redesign/`
+(ignored because runtime evidence can contain game material).
+
+- Duo outer dashboard: portrait 466×678 pt and landscape 678×466 pt; zero text-audit problems
+  with representative sample data. Both screenshots inspected.
+- iPhone 18 Pro / iOS 27.0: portrait 402×874 pt and landscape 874×402 pt; zero text-audit
+  problems. Both screenshots inspected. These captures precede only the final primary-button
+  surface change from glass to filled for contrast.
+- iPad Pro 11-inch M5 / iOS 27.0: the two-column portrait dashboard at 834×1210 pt reports
+  zero text-audit problems and was visually inspected. The landscape request retained portrait
+  geometry, so iPad landscape remains unverified.
+- The scripted offline acceptance run completed 4200 retraces but exited 5: it reached character
+  selection and never observed required match scene `0x0202`. A passing match/performance result
+  is therefore **not established** (`match-final.log`). No builds or simulators ran during this check.
+- Live inner/outer transitions, book/tabletop/tent poses, both Split View placements, controller
+  editor interactions, VoiceOver/Dynamic Type and Vision Pro remain unverified. Device Hub UI
+  automation timed out; successful static layout checks do not establish fold-pose readiness.
+
 ## Upstream provenance and updates
 
 All ten skill files and three shared references are unmodified copies from

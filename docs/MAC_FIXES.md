@@ -65,3 +65,14 @@ onto every edge, potentially consuming most of the touch-control area. Derive sc
 view and drawable, intersect camera regions with the view, and reserve only their nearest edge beyond
 the existing safe inset. Verified with seven 3× geometry cases and successful iOS simulator/macOS
 builds. Live fold transitions and camera avoidance across all poses remain unverified.
+
+## iOS dashboard redesign — 2026-09-27
+
+The Duo outer-display baseline clipped the identity and section headings, and Play sat below all
+settings. Replaced the oversized hero with compact branding, moved Play and setup first, and made
+settings and history rows wrap within safe-area columns. Columns now use UIKit's local reserved
+region coordinates and the actual available width. Rounded glass cards retain Melee's yellow
+headers; primary actions use a filled yellow surface for readable dark text. The seven-choice
+resolution picker is a native menu. Launcher display information uses its own scene, and entrance
+and Play animations respect Reduce Motion. See `docs/IPHONE_DUO.md` for the simulator evidence
+and remaining pose checks. macOS and iOS simulator builds pass.
