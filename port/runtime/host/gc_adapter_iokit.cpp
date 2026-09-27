@@ -111,9 +111,11 @@ void reader_thread() {
 }
 
 void close_adapter() {
+  log("gc adapter: close_adapter entry (running=%d joinable=%d)", (int)g_running.load(), (int)g_thread.joinable());
   g_running.store(false);
   if (g_interface && g_interface_open && g_pipe_in) (*g_interface)->AbortPipe(g_interface, g_pipe_in);   // wakes a blocking read
   if (g_thread.joinable()) g_thread.join();
+  log("gc adapter: close_adapter joined");
   if (g_interface) {
     if (g_interface_open) { (*g_interface)->USBInterfaceClose(g_interface); g_interface_open = false; }
     (*g_interface)->Release(g_interface); g_interface = nullptr;
@@ -198,6 +200,9 @@ bool open_adapter() {
   g_logged_missing = false;
   g_running.store(true);
   g_thread = std::thread(reader_thread);
+  log("gc adapter: reader thread started");
+  static std::once_flag shutdown_once;
+  std::call_once(shutdown_once, [] { std::atexit([] { close_adapter(); }); });
   return true;
 }
 
