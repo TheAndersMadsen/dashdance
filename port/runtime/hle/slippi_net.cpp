@@ -72,6 +72,14 @@ static int ENET_CALLBACK intercept_callback(ENetHost* host, ENetEvent* event) {
   if (host->receivedDataLength == 1 && host->receivedData[0] == 0) { event->type = (ENetEventType)42; return 1; }
   return 0;
 }
+// One line per ENet peer event. Every mid-game drop seen so far came 30 to 32 s after connecting, which is ENet's cap
+// for a peer whose reliable commands were never acknowledged; these lines say which peer that was (the outgoing
+// attempt or the opponent's incoming connection), whether it ever connected, and whether the opponent asked for it.
+static void log_peer(const char* what, ENetHost* host, ENetPeer* p, bool in_use, unsigned data) {
+  host::log("slippi: peer %s: slot %d %x:%u state %d ids in %u out %u connect %08x rtt %u ms lost %u last-recv %u ms ago data %u%s",
+            what, (int)(p - host->peers), p->address.host, p->address.port, (int)p->state, p->incomingPeerID, p->outgoingPeerID, p->connectID,
+            p->roundTripTime, p->packetsLost, p->lastReceiveTime ? host->serviceTime - p->lastReceiveTime : 0, data, in_use ? " (the connection in use)" : "");
+}
 static std::string peer_key(ENetPeer* p) { std::stringstream s; s << p->address.host << "-" << p->address.port; return s.str(); }
 
 // ---------------------------------------------------------------- Packet
@@ -250,6 +258,7 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
         server_[conn_idx] = peer;
         for (auto& c : active_connections_[key]) {
           if (c.first == peer || c.second.is_disconnected) continue;
+          log_peer("closing the duplicate of the connection in use", client_, c.first, false, 0);
           enet_peer_disconnect(c.first, 0);
           c.second.is_disconnected = true;
         }
@@ -426,10 +435,11 @@ void NetplayClient::ThreadFunc() {
           break;
         }
         case ENET_EVENT_TYPE_DISCONNECT:
-          if (ev.peer) host::log("slippi: disconnect event from %x:%u while connecting", ev.peer->address.host, ev.peer->address.port);
+          if (ev.peer) log_peer("dropped while connecting", client_, ev.peer, false, ev.data);
           break;
         case ENET_EVENT_TYPE_CONNECT: {
           if (!ev.peer) break;
+          log_peer("connected", client_, ev.peer, false, ev.data);
           int early_idx = 0;
           for (int i = 0; i < (int)remote_addrs.size(); ++i)
             if (remote_addrs[i].host == ev.peer->address.host && remote_addrs[i].port == ev.peer->address.port) { early_idx = i; break; }
@@ -500,6 +510,7 @@ void NetplayClient::ThreadFunc() {
       }
       case ENET_EVENT_TYPE_DISCONNECT: {
         std::string key = peer_key(ev.peer);
+        { bool in_use = false; for (auto* sp : server_) if (sp == ev.peer) in_use = true; log_peer(ev.data ? "disconnected by the opponent" : "timed out or closed", client_, ev.peer, in_use, ev.data); }
         if (active_connections_.count(key) && active_connections_[key].count(ev.peer)) active_connections_[key][ev.peer].is_disconnected = true;
         bool all_peers_gone = AreAllPeersDisconnectedForKey(key);
         if (all_peers_gone && active_connections_.count(key) && active_connections_[key].count(ev.peer))
@@ -513,6 +524,7 @@ void NetplayClient::ThreadFunc() {
         break;
       }
       case ENET_EVENT_TYPE_CONNECT: {
+        log_peer("connected late", client_, ev.peer, false, ev.data);
         int late_idx = 0;
         for (int i = 0; i < (int)server_.size(); ++i)
           if (server_[i]->address.host == ev.peer->address.host && server_[i]->address.port == ev.peer->address.port) { late_idx = i; break; }

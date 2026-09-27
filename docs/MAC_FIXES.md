@@ -18,7 +18,7 @@ A fix counts as confirmed once it has been played through again.
 
 | # | Found | What happens | Evidence | Notes |
 |---|---|---|---|---|
-| | | None right now. | | |
+| 9 | 2026-09-19 | Direct games drop 30.7 to 32.0 s after connecting, six times in four sessions (RKOh vs The__Phenom2009), while the link is healthy: checksums agree, no input gaps, ping 33 to 48 ms. Sessions that survive log a duplicate connection being closed 3 to 5 s after connecting; the ones that drop never do. | `session-20260919-114240.log` (three drops), `-122015`, `-122449`, `-122828`; working: `-115157`, `-123013` | 30 s is ENet's cap for a peer whose reliable commands were never acknowledged (no RTT sample, 500 ms default, backoff to the 30 s maximum). Both players dial each other, so each side has an outgoing attempt (registered as an active connection before it connects) and possibly the opponent's incoming one. Which peer dies, and why that ends the game, could not be told from these logs: late connects and the disconnect reason were not logged. `slippi: peer ...` lines now record every connect, late connect, duplicate close and drop with slot, state, ids, RTT, loss and whether it was the connection in use. Next drop: read those lines. |
 
 ## Fixed
 

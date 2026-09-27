@@ -46,6 +46,8 @@ Details and evidence for each are in `docs/MAC_FIXES.md`.
 - Log every rollback (frame rolled back to, and from).
 - Log the guest call depth every 60 frames, so a leak shows up long before it crashes.
 
+- Netplay logs one `slippi: peer ...` line for every ENet connect, late connect, duplicate close and drop (slot, state, peer ids, RTT, loss, last receive, reason, whether it was the connection in use), to settle the 30-second direct-game drops (docs/MAC_FIXES.md issue 9).
+
 ## Debugging tools we built
 
 All in `tools/mac/`, written up for agents in the `fix-logs` skill (`desync.md`, `crash.md`).
