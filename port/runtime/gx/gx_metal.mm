@@ -472,7 +472,11 @@ class MetalBackend final : public Backend {
     }
     if (failed_.count(key)) return nil;   // a pipeline that would not build: skip the draw, do not retry every frame
     if (async_compile_) {
-      if (!pending_.count(key)) { pending_.insert(key); start_compile_job(key, vsu, psu, compile_queue()); }
+      // A pipeline from the previous session's list may still be far back in the serial precompile queue (hundreds deep
+      // and slow while the system's shader cache is cold, as after an app update). A draw needs it now, so it also goes
+      // on the concurrent queue, once; whichever job finishes first wins.
+      if (!pending_.count(key)) { pending_.insert(key); urgent_.insert(key); start_compile_job(key, vsu, psu, compile_queue()); }
+      else if (urgent_.insert(key).second) start_compile_job(key, vsu, psu, compile_queue());
       return nil;
     }
     id<MTLFunction> vs = shader_function(true, vh, vsu, psu);
@@ -562,7 +566,11 @@ class MetalBackend final : public Backend {
   void drain_ready() {
     std::vector<std::pair<PsoKey, id<MTLRenderPipelineState>>> ready;
     { std::lock_guard<std::mutex> lock(async_mutex_); ready.swap(ready_); }
-    for (auto& r : ready) { if (r.second) pipelines_[r.first] = r.second; else failed_.insert(r.first); pending_.erase(r.first); }
+    for (auto& r : ready) {
+      // The first result for a key is kept: draws cache the pipeline they were given, so it must not be replaced.
+      if (r.second) pipelines_.emplace(r.first, r.second); else if (!pipelines_.count(r.first)) failed_.insert(r.first);
+      pending_.erase(r.first); urgent_.erase(r.first);
+    }
     if (frame_counter_ % 60 == 0) {
       unsigned done; double ms;
       { std::lock_guard<std::mutex> lock(async_mutex_); done = async_done_; ms = async_ms_; async_done_ = 0; async_ms_ = 0; }
@@ -1349,7 +1357,7 @@ class MetalBackend final : public Backend {
   std::mutex record_mutex_;                      // known_ and pipelines.bin
   std::vector<std::pair<PsoKey, id<MTLRenderPipelineState>>> ready_;
   unsigned async_done_ = 0; double async_ms_ = 0;
-  std::unordered_set<PsoKey, PsoKeyHash> pending_, known_, failed_;
+  std::unordered_set<PsoKey, PsoKeyHash> pending_, known_, failed_, urgent_;   // urgent_: pending keys a draw is waiting for
   double compile_ms_ = 0, pso_ms_ = 0, compile_total_ms_ = 0; unsigned compiles_ = 0, psos_ = 0;
   const bool compile_log_all_ = [] { const char* e = std::getenv("MELEE_METAL_COMPILE_LOG"); return e && *e && *e != '0'; }();
   id<MTLRenderPipelineState> bound_pipeline_ = nil;
