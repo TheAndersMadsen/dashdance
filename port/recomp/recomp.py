@@ -89,6 +89,8 @@ class GeckoSet:
         # Playback: the list a replay carries (served over EXI, installed by the Playback code at
         # `extra_base`) is translated too, so its caves run as compiled code.
         self.extra = gecko.parse_gct(Path(extra_gct).read_bytes(), extra_base) if extra_gct else None
+        self.extra_bytes, self.extra_base = (Path(extra_gct).read_bytes(), extra_base) if extra_gct else (b"", 0)
+        self.playback = extra_gct is not None or sys_dir.name == "slippi_sys_playback"
         # Run-time optional codes: everything the full table adds over the base table.
         base_gct, _ = gecko.generate_gct(self.codes, include_optional=False)
         base = gecko.parse_gct(base_gct, gct_base if gct_base else 0x81900000)
@@ -165,6 +167,9 @@ def write_gecko_data(out, gs):
         len(gs.boot.hooks)))
     text.append("const uint32_t gct_base_used = 0x%08Xu;\n" % (gs.gct_base or 0))
     text.append("const uint32_t optional_gct_offset = %du;\n" % gs.optional_offset)
+    text.append("const bool playback_code_set = %s;\n" % ("true" if gs.playback else "false"))
+    text.append(cbytes("extra_gct", gs.extra_bytes or b"\0").replace("extra_gct_size = 1;", "extra_gct_size = %d;" % len(gs.extra_bytes)))
+    text.append("const uint32_t extra_gct_base = 0x%08Xu;\n" % gs.extra_base)
     for flag in gs.optional_flags:
         text.append("bool option_%s = false;\n" % flag)
     for i, (addr, patched, original) in enumerate(gs.optional_data):
@@ -276,6 +281,7 @@ def main():
                                     "const Write boot_writes[1] = {{0, 0, nullptr}}; const size_t boot_writes_count = 0;\n"
                                     "const HookInstall boot_hooks[1] = {{0, 0, 0}}; const size_t boot_hooks_count = 0;\nconst uint32_t gct_base_used = 0;\n"
                                     "const uint32_t optional_gct_offset = 0; bool option_widescreen = false;\n"
+                                    "const bool playback_code_set = false; const uint8_t extra_gct[1] = {0}; const size_t extra_gct_size = 0; const uint32_t extra_gct_base = 0;\n"
                                     "const OptionalWrite optional_writes[1] = {{0, 0, nullptr, nullptr}}; const size_t optional_writes_count = 0;\n}\n")
 
     # Prototypes for every function.

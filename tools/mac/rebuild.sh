@@ -15,6 +15,7 @@ cmake -S . -B "$B" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_CO
   -DMELEE_DECOMP_ROOT="$ROOT/deps/melee" -DMELEE_DOL_PATH="$ROOT/deps/disc/main.dol" -DMELEE_PORT_GENERATED_DIR="$B/generated/guest" \
   -DMELEE_BUILD_PORT_TESTS=OFF -DMELEE_BUILD_PORT_HEADLESS=OFF -DMELEE_BUILD_PORT_METAL=ON > /dev/null
 cmake --build "$B" --target melee_port_mac
+python3 tools/mac/build_player.py   # DashdancePlayback, the replay player (skipped until there is a replay)
 tools/package_macos_app.sh "$B" dist
 if pgrep -x Dashdance > /dev/null; then
   echo "Built dist/Dashdance.app. Dashdance is running, so /Applications was not updated; quit it and run: $0 --install-only"

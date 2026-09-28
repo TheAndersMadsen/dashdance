@@ -58,6 +58,7 @@ std::vector<GameRow> Dashboard::rows() const {
       if (!code.empty() && p.code == code) mine = p.port;
     }
     r.title = vs.empty() ? "Match" : vs;
+    r.path = g.path;
     char b[96];
     const int secs = g.last_frame / 60;
     std::snprintf(b, sizeof b, "%s · %d:%02d · %s", slippi::login::stage_name(g.stage), secs / 60, secs % 60, g.started_at.c_str());

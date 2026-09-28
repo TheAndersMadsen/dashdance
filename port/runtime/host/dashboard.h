@@ -8,7 +8,7 @@
 #include <vector>
 
 namespace host {
-struct GameRow { std::string title, subtitle, result; bool win = false, loss = false; };
+struct GameRow { std::string title, subtitle, result, path; bool win = false, loss = false; };   // path: the .slp
 struct Dashboard {
   bool signed_in = false;
   std::string name, code;

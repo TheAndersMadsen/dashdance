@@ -481,7 +481,7 @@ if(MELEE_BUILD_PORT_METAL)
     set(PORT_APPLE_UI_FRAMEWORK "-framework UIKit")
   else()
     set(PORT_APPLE_LAUNCHER_SOURCE runtime/host/mac_launcher.mm)
-    set(PORT_APPLE_UTI_FRAMEWORK "-framework SceneKit" "-framework IOKit")
+    set(PORT_APPLE_UTI_FRAMEWORK "-framework UniformTypeIdentifiers" "-framework SceneKit" "-framework IOKit")
     set(PORT_APPLE_UI_FRAMEWORK "-framework AppKit")
   endif()
   # The application renders with the native Metal backend and talks to SDL3 directly;

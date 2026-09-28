@@ -453,7 +453,7 @@ void dma_write(uint32_t addr, uint32_t size) {
       case CMD_STOP_MUSIC: jukebox::stop(); break;
       case CMD_CHANGE_MUSIC_VOLUME: jukebox::set_melee_volume(mem[loc + 1]); break;
       case CMD_RECEIVE_COMMANDS: break;   // handled above
-      case CMD_RECEIVE_GAME_END: write_to_file(&mem[loc], payload + 1, "close"); break;
+      case CMD_RECEIVE_GAME_END: write_to_file(&mem[loc], payload + 1, "close"); slippi::playback::note_game_end(); break;
       case CMD_FRAME_BOOKEND: write_to_file(&mem[loc], payload + 1, ""); break;
       case CMD_PREPARE_REPLAY: case CMD_READ_FRAME: case CMD_IS_STOCK_STEAL:
       case CMD_IS_FILE_READY: case CMD_GET_GECKO_CODES: {

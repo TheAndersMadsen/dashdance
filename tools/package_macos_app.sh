@@ -15,6 +15,15 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 sed "s/@VERSION@/$VERSION/g" "$ROOT/port/app/macos/Info.plist" > "$APP/Contents/Info.plist"
 cp "$EXE" "$APP/Contents/MacOS/Dashdance"
 cp -R "$ROOT/port/slippi_sys" "$APP/Contents/Resources/slippi_sys"
+# The replay player (tools/mac/build_player.py): the game translated against the Slippi Playback code set.
+PLAYER="${DASHDANCE_PLAYER:-$ROOT/build/mac-player/port/melee_port_mac}"
+if [[ -x "$PLAYER" ]]; then
+  cp "$PLAYER" "$APP/Contents/MacOS/DashdancePlayback"
+  cp -R "$ROOT/port/slippi_sys_playback" "$APP/Contents/Resources/slippi_sys_playback"
+  echo "replay player: included"
+else
+  echo "replay player: not built (tools/mac/build_player.py); Watch buttons will say so"
+fi
 cp "$ROOT/port/app/icons/AppIcon.icon/Assets/glyph.png" "$APP/Contents/Resources/AppMark.png"   # the hero mark in the dashboard
 cp -R "$ROOT/port/app/art/controller" "$APP/Contents/Resources/controller"                        # controller editor artwork
 # App icon: the Icon Composer bundle (the Dashdance mark as a glass layer over violet) compiled by

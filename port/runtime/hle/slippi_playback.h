@@ -17,4 +17,5 @@ void prepare_is_stock_steal(const uint8_t* payload, std::vector<uint8_t>& q);// 
 void prepare_is_file_ready(std::vector<uint8_t>& q);                         // CMD_IS_FILE_READY
 void prepare_gecko_codes(std::vector<uint8_t>& q);                           // CMD_GET_GECKO_CODES
 void note_gecko_list_dma(uint32_t addr, uint32_t size);                      // where the game put the list
+void note_game_end();                                                        // the match ended: close the player
 }  // namespace slippi::playback
