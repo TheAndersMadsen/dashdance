@@ -99,6 +99,10 @@ const OptionalWrite optional_writes[] = {{0, 0, nullptr, nullptr, nullptr}};
 const size_t optional_writes_count = 0;
 bool option_widescreen = false;
 bool option_flash_failed_lcancel = false;
+const bool playback_code_set = false;
+const uint8_t extra_gct[1] = {0};
+const size_t extra_gct_size = 0;
+const uint32_t extra_gct_base = 0;
 }
 namespace slippi::playback {
 void prepare_game_info(const uint8_t*, std::vector<uint8_t>&) {}

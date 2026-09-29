@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "slippi_playback.h"
 #include "slippi_playback_legacy.h"
+#include "gecko_data.h"
 #include "host.h"
 #include "slippilib/SlippiGame.h"
 #include <nlohmann/json.hpp>
@@ -192,7 +193,19 @@ void prepare_game_info(const uint8_t*, std::vector<uint8_t>& q) {
 void prepare_gecko_codes(std::vector<uint8_t>& q) { q.assign(g_gecko_list.begin(), g_gecko_list.end()); }
 
 void note_gecko_list_dma(uint32_t addr, uint32_t size) {
-  if (g_gecko_list_addr != addr) { g_gecko_list_addr = addr; host::log("playback: game placed the replay code list at %08X (%u bytes)", addr, size); }
+  if (g_gecko_list_addr == addr) return;
+  g_gecko_list_addr = addr;
+  host::log("playback: game placed the replay code list at %08X (%u bytes)", addr, size);
+  // The replay's codes only run as translated code when the build translated this same list at this address
+  // (recomp.py --extra-gct). Instruction words that differ run the build's version, so the game can desync.
+  if (gecko::extra_gct_size == 0) { host::log("playback: this build translated no replay code list; the replay's codes do not run and it may desync"); return; }
+  size_t differ = 0;
+  const size_t n = std::min(gecko::extra_gct_size, g_gecko_list.size());
+  for (size_t i = 0; i + 4 <= n; i += 4) differ += std::memcmp(&gecko::extra_gct[i], &g_gecko_list[i], 4) != 0;
+  if (addr != gecko::extra_gct_base || gecko::extra_gct_size != g_gecko_list.size())
+    host::log("playback: code list mismatch: this build translated %zu bytes at %08X, the replay has %zu at %08X; it may desync",
+              gecko::extra_gct_size, gecko::extra_gct_base, g_gecko_list.size(), addr);
+  else host::log("playback: code list matches the translated one (%zu of %zu words differ)", differ, n / 4);
 }
 
 void prepare_frame_data(const uint8_t* payload, std::vector<uint8_t>& q) {
@@ -210,7 +223,12 @@ void prepare_frame_data(const uint8_t* payload, std::vector<uint8_t>& q) {
     fully = f->inputsFullyFetched && finalized;
   }
   bool ready = found && (complete || fully);
-  if (!ready) { q.push_back(complete ? FRAME_RESP_TERMINATE : FRAME_RESP_WAIT); if (complete) host::log("playback: game terminates on frame %d", frame); return; }
+  if (!ready) {
+    q.push_back(complete ? FRAME_RESP_TERMINATE : FRAME_RESP_WAIT);
+    // Past the last frame the game ends the match (note_game_end closes the player).
+    if (complete) { host::log("playback: game terminates on frame %d; closing", frame); host::request_exit(0); }
+    return;
+  }
   g_current_frame = frame;
   q.push_back(FRAME_RESP_CONTINUE);
   Slippi::FrameData* f = g_game->GetFrame(frame);
@@ -218,6 +236,16 @@ void prepare_frame_data(const uint8_t* payload, std::vector<uint8_t>& q) {
   q.push_back(f->randomSeedExists ? 1 : 0);
   append_u32(q, f->randomSeed);
   for (uint8_t port = 0; port < 4; ++port) { character_frame_data(f, port, false, q); character_frame_data(f, port, true, q); }
+}
+
+// A match ends either past the replay's last frame (TERMINATE above) or on its own (stocks, time, LRAS),
+// and the game then leaves the scene, which trips an XFB assertion in HSD video.c: the scene after playback
+// is Dolphin's waiting screen. The replay is over at game end, so close the player there.
+void note_game_end() {
+  if (!enabled() || g_finished) return;
+  g_finished = true;
+  host::log("playback: match ended; closing");
+  host::request_exit(0);
 }
 
 void prepare_is_stock_steal(const uint8_t* payload, std::vector<uint8_t>& q) {

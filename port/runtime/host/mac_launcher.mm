@@ -8,6 +8,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import <SceneKit/SceneKit.h>
 #import <objc/runtime.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include "dashboard.h"
 #include "gc_diagram.h"
 #include "host.h"
@@ -52,10 +53,47 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
 @end
 static MUStatusBar* g_status = nil;
 
+// Replays play in DashdancePlayback, the sibling executable translated against the Slippi Playback code set
+// (tools/mac/rebuild.sh builds it), as a separate process so the dashboard stays open.
+static NSString* g_replay_dir = nil;
+static void watch_replay_file(NSString* path) {
+  NSString* player = [NSBundle.mainBundle.executablePath.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"DashdancePlayback"];
+  if (const char* env = std::getenv("MELEE_PLAYER")) player = [NSString stringWithUTF8String:env];
+  if (!path.length) return;
+  if (![NSFileManager.defaultManager isExecutableFileAtPath:player]) {
+    NSAlert* alert = [[NSAlert alloc] init];
+    alert.messageText = @"No replay player in this build";
+    alert.informativeText = @"Rebuild Dashdance with tools/mac/rebuild.sh to add the replay player.";
+    [alert runModal];
+    return;
+  }
+  NSTask* task = [[NSTask alloc] init];
+  task.executableURL = [NSURL fileURLWithPath:player];
+  task.arguments = @[@"--replay", path];
+  NSError* error = nil;
+  if (![task launchAndReturnError:&error]) {
+    NSAlert* alert = [NSAlert alertWithError:error];
+    [alert runModal];
+  }
+}
+
 // Help menu links (menu items need a target outside the responder chain).
 @interface MULinks : NSObject
 @end
 @implementation MULinks
+// Watch buttons and menu items carry their replay's path (representedObject, or "path" on a button).
+- (void)watchReplay:(id)sender {
+  NSString* path = [sender respondsToSelector:@selector(representedObject)] ? [sender representedObject] : nil;
+  if (!path) path = objc_getAssociatedObject(sender, "path");
+  watch_replay_file(path);
+}
+- (void)openReplay:(id)sender {
+  NSOpenPanel* panel = [NSOpenPanel openPanel];
+  panel.allowedContentTypes = @[[UTType typeWithFilenameExtension:@"slp"] ?: UTTypeData];
+  panel.message = @"Choose a Slippi replay to watch";
+  if (g_replay_dir) panel.directoryURL = [NSURL fileURLWithPath:g_replay_dir];
+  if ([panel runModal] == NSModalResponseOK) watch_replay_file(panel.URL.path);
+}
 - (void)openGitHub:(id)sender { [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@"https://github.com/TheAndersMadsen/dashdance"]]; }
 - (void)openSlippiSite:(id)sender { [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@"https://slippi.gg"]]; }
 - (void)quit:(id)sender {
@@ -80,6 +118,10 @@ NSMenu* build_main_menu() {
   NSMenuItem* quit = [app addItemWithTitle:@"Quit Dashdance" action:@selector(quit:) keyEquivalent:@"q"];
   quit.target = g_links;
   appItem.submenu = app;
+  NSMenuItem* fileItem = [[NSMenuItem alloc] init]; [menubar addItem:fileItem];
+  NSMenu* file = [[NSMenu alloc] initWithTitle:@"File"];
+  NSMenuItem* watch = [file addItemWithTitle:@"Watch Replay…" action:@selector(openReplay:) keyEquivalent:@"o"]; watch.target = g_links;
+  fileItem.submenu = file;
   NSMenuItem* windowItem = [[NSMenuItem alloc] init]; [menubar addItem:windowItem];
   NSMenu* window = [[NSMenu alloc] initWithTitle:@"Window"];
   [window addItemWithTitle:@"Minimize" action:@selector(performMiniaturize:) keyEquivalent:@"m"];
@@ -1305,6 +1347,13 @@ static NSButton* pairing_button(NSString* title, NSString* sym, id target, SEL a
     NSTextField* result = [NSTextField labelWithString:ns(r.result)];
     result.font = meleeFont(13); result.textColor = r.win ? kGreen() : r.loss ? kRed() : [NSColor colorWithWhite:1 alpha:0.6];
     [row addArrangedSubview:text]; [row addArrangedSubview:spacer]; [row addArrangedSubview:result];
+    if (!r.path.empty()) {
+      NSButton* watch = [NSButton buttonWithImage:symbol(@"play.circle.fill", 17, NSFontWeightMedium) target:g_links action:@selector(watchReplay:)];
+      watch.bordered = NO; watch.contentTintColor = kYellow(); watch.toolTip = @"Watch this replay";
+      watch.accessibilityLabel = [NSString stringWithFormat:@"Watch %@", ns(r.title)];
+      objc_setAssociatedObject(watch, "path", ns(r.path), OBJC_ASSOCIATION_COPY);
+      [row addArrangedSubview:watch];
+    }
     [self.gamesStack addArrangedSubview:row];
   }
 }
@@ -1555,7 +1604,11 @@ static NSButton* pairing_button(NSString* title, NSString* sym, id target, SEL a
       [menu addItem:[NSMenuItem separatorItem]];
       NSMenuItem* recent = [[NSMenuItem alloc] initWithTitle:@"Recent Games" action:nil keyEquivalent:@""];
       NSMenu* sub = [[NSMenu alloc] init]; sub.autoenablesItems = NO;
-      for (size_t i = 0; i < rows.size() && i < 8; ++i) [sub addItem:[self info:[NSString stringWithFormat:@"%s  %s  ·  %s", rows[i].result.c_str(), rows[i].title.c_str(), rows[i].subtitle.c_str()]]];
+      for (size_t i = 0; i < rows.size() && i < 8; ++i) {
+        NSMenuItem* game = [self info:[NSString stringWithFormat:@"%s  %s  ·  %s", rows[i].result.c_str(), rows[i].title.c_str(), rows[i].subtitle.c_str()]];
+        if (!rows[i].path.empty()) { game.representedObject = ns(rows[i].path); game.target = g_links; game.action = @selector(watchReplay:); game.enabled = YES; game.toolTip = @"Watch this replay"; }
+        [sub addItem:game];
+      }
       recent.submenu = sub; [menu addItem:recent];
     }
   } else {
@@ -1594,6 +1647,7 @@ void mac_show_error(const std::string& title, const std::string& detail) {
 bool launcher_run(LauncherSettings& settings, const std::string& error) {
   @autoreleasepool {
     prepare_application();
+    g_replay_dir = [NSString stringWithUTF8String:settings.replay_dir.c_str()];
     settings.display_hz = display_max_hz(NSScreen.mainScreen);
     if (id<MTLDevice> gpu = MTLCreateSystemDefaultDevice()) settings.gpu_name = gpu.name.UTF8String;
     MULauncherWindow* launcher = [[MULauncherWindow alloc] initWithSettings:&settings error:error.empty() ? nil : [NSString stringWithUTF8String:error.c_str()]];

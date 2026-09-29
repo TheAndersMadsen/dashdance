@@ -17,6 +17,7 @@
 #include "numeric.h"
 #include "slippi_net.h"
 #include "slippi_online.h"
+#include "slippi_playback.h"
 #include "window.h"
 
 #include <cstdio>
@@ -33,6 +34,7 @@
 #include <algorithm>
 #include <mach-o/dyld.h>
 #include <pthread/qos.h>
+#include <unistd.h>
 #include <TargetConditionals.h>
 #if TARGET_OS_IPHONE
 #include <SDL3/SDL_main.h>
@@ -71,6 +73,7 @@ void usage() {
       "  --local-peer i:port:ip:port  peer two local instances directly (testing)\n"
       "  --sys-dir DIR            Slippi Sys folder (code tables, GameFiles)\n"
       "  --replay-dir DIR         .slp output (default ~/Library/Application Support/Dashdance/Replays)\n"
+      "  --replay FILE.slp        watch a Slippi replay (playback build; uses the remembered disc)\n"
       "  --card-dir DIR           memory card A folder of .gci files\n"
       "  --profile-dir DIR        app profile root (settings, Aurora preferences)\n"
       "  --cache-dir DIR          pipeline cache and ISO hash cache\n"
@@ -100,11 +103,12 @@ std::string home_dir() {
   return home && *home ? home : ".";
 }
 
-std::string find_sys_dir() {
+// name: slippi_sys (the online code set) or slippi_sys_playback (the replay player's).
+std::string find_sys_dir(const std::string& name = "slippi_sys") {
   if (const char* env = std::getenv("MELEE_SYS_DIR")) return env;
   const fs::path exe = executable_dir();
-  for (const fs::path candidate : {exe / "slippi_sys", exe / "../Resources/slippi_sys", exe / "../../port/slippi_sys",
-                                   exe / "../../../port/slippi_sys", fs::path("port/slippi_sys")}) {
+  for (const fs::path candidate : {exe / name, exe / "../Resources" / name, exe / "../../port" / name,
+                                   exe / "../../../port" / name, fs::path("port") / name}) {
     std::error_code ec;
     if (fs::is_directory(candidate / "GameFiles", ec)) return fs::weakly_canonical(candidate, ec).string();
   }
@@ -172,7 +176,7 @@ int main(int argc, char** argv) {
   int volume = 70; bool volume_arg = false;
   uint32_t window_w = 1280, window_h = 960;
   gx::MetalOptions gfx;
-  std::string script, iso_arg, user_dir, sys_dir, replay_dir, card_dir, profile_dir, cache_dir, log_file;
+  std::string script, iso_arg, user_dir, sys_dir, replay_dir, card_dir, profile_dir, cache_dir, log_file, replay_file;
   bool offline = false, choose_disc = false, fullscreen_arg = false, delay_arg = false;
   bool hidden = false;
   bool expect_scene = false; uint16_t expected_scene = 0;
@@ -215,6 +219,7 @@ int main(int argc, char** argv) {
       lp.remote_ip = v.substr(a2 + 1, a3 - a2 - 1); lp.remote_port = (uint16_t)std::atoi(v.substr(a3 + 1).c_str()); }
     else if (a == "--sys-dir") sys_dir = next();
     else if (a == "--replay-dir") replay_dir = next();
+    else if (a == "--replay") replay_file = next();
     else if (a == "--card-dir") card_dir = next();
     else if (a == "--profile-dir") profile_dir = next();
     else if (a == "--cache-dir") cache_dir = next();
@@ -287,6 +292,31 @@ int main(int argc, char** argv) {
       settings.account_name = account.display_name; settings.account_code = account.connect_code; settings.account_from_launcher = true;
     }
   }
+  // Watching a replay: no dashboard, no online services, the remembered disc, and the game's own re-recording
+  // of the replay goes to the cache instead of the replay history.
+  if (!replay_file.empty() && !gecko::playback_code_set) {
+    // This is the online build: the replay player is its sibling executable, translated against the Slippi
+    // Playback code set (tools/mac/rebuild.sh builds both). Hand the whole command line over to it.
+    const std::string player = executable_dir() + "/DashdancePlayback";
+    if (::access(player.c_str(), X_OK) != 0) {
+      host::mac_show_error("No replay player in this build", "Rebuild Dashdance with tools/mac/rebuild.sh to add the replay player.");
+      return 2;
+    }
+    argv[0] = const_cast<char*>(player.c_str());
+    ::execv(player.c_str(), argv);
+    std::perror("execv DashdancePlayback");
+    return 2;
+  }
+  if (!replay_file.empty()) {
+    std::error_code ec;
+    if (!fs::is_regular_file(replay_file, ec)) { std::fprintf(stderr, "no replay at %s\n", replay_file.c_str()); return 2; }
+    if (iso_arg.empty()) iso_arg = settings.iso;
+    if (iso_arg.empty()) { host::mac_show_error("Choose your disc first", "Open Dashdance once and pick your Melee disc image, then watch replays."); return 2; }
+    offline = true;
+    choose_disc = false;
+    slippi::playback::set_replay(replay_file);
+    if (replay_dir.empty()) replay_dir = (support / "Cache/Playback").string();
+  }
   const bool show_launcher = iso_arg.empty() || choose_disc;
   if (show_launcher) {
     std::string previous_error;
@@ -318,7 +348,7 @@ int main(int argc, char** argv) {
   if (!window_arg && gfx.widescreen) { window_w = 1280; window_h = 720; }
   gfx.sharpness = sharpness_arg >= 0.0f ? sharpness_arg : settings.sharpness;
   gfx.upscaler = upscaler_arg >= 0 ? upscaler_arg : settings.upscaler;
-  if (show_launcher) { gfx.efb_scale = settings.scale; gfx.anisotropy = settings.anisotropy; gfx.vsync = settings.vsync; if (!volume_arg) volume = settings.volume; }
+  if (show_launcher || !replay_file.empty()) { gfx.efb_scale = settings.scale; gfx.anisotropy = settings.anisotropy; gfx.vsync = settings.vsync; if (!volume_arg) volume = settings.volume; }
   if (!delay_arg) online.delay = std::clamp(settings.online_delay, 1, 9);   // the player's choice; each frame of delay adds 16.7 ms
   host::log("slippi: online input delay %d frame%s (%.1f ms)", online.delay, online.delay == 1 ? "" : "s", online.delay * 16.667);
   host::touch_set_scale(settings.overlay_scale);
@@ -328,7 +358,7 @@ int main(int argc, char** argv) {
   if (replay_dir.empty()) replay_dir = (support / "Replays").string();
   if (cache_dir.empty()) cache_dir = (support / "Cache").string();
   if (log_file.empty()) log_file = session_log_path(support / "Logs");
-  if (sys_dir.empty()) sys_dir = find_sys_dir();
+  if (sys_dir.empty()) sys_dir = find_sys_dir(replay_file.empty() ? "slippi_sys" : "slippi_sys_playback");
   if (sys_dir.empty()) { std::fprintf(stderr, "cannot find the Slippi Sys folder; pass --sys-dir or set MELEE_SYS_DIR\n"); return 2; }
   for (const auto& [dir, what] : std::vector<std::pair<std::string, const char*>>{
            {profile_dir, "profile"}, {card_dir, "memory card"}, {replay_dir, "replay"}, {cache_dir, "cache"}})

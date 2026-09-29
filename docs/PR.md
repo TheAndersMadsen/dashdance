@@ -30,6 +30,14 @@ Details and evidence for each are in `docs/MAC_FIXES.md`.
 - Show live ping in the performance HUD during online matches.
 - Let players opt into Slippi's red flash on failed L-cancels from the Apple dashboards, with an in-game setting saved for the next launch.
 
+- Watch replays in Dashdance: a play button on each Recent Games row, the same in the menu bar extra, and
+  File > Watch Replay… (Cmd+O). They open `DashdancePlayback`, a second executable in the app translated against
+  the Slippi Playback code set plus Dashdance's own replay code list (`tools/mac/build_player.py`, run by
+  `rebuild.sh`). Playback is frame-exact on Dashdance replays and runs at 60 fps (Slippi's own playback Dolphin
+  runs under Rosetta here and managed about 30-45). `Dashdance --replay FILE.slp` does the same from a shell. The
+  player closes when the match ends, which also avoids an XFB assertion as the game leaves the scene. Replays from
+  other Slippi versions carry other code lists; the player logs a "code list mismatch" and may desync on them.
+
 ## Logging
 
 - Write a log file for every Mac session (no Mac session ever wrote one, so crashes left no trace).
