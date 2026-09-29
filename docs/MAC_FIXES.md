@@ -7,6 +7,13 @@ How the loop works: play, then run `/fix-logs`. It reads the session logs and cr
 reviewed, logs what broke here, fixes it one commit at a time, rebuilds, and adds a bullet to `docs/PR.md`.
 A fix counts as confirmed once it has been played through again.
 
+## Development tooling
+
+- 2026-09-27: Installed the ten MIT-licensed iPhone Duo skills at upstream revision
+  `b8b9d15b4dc987d0c35940265e07f4128ba79361`, with shared references and Claude Code symlinks.
+  `CLAUDE.md` routes Duo work through the [UIKit/Metal workflow](IPHONE_DUO.md).
+  Validated upstream file equality, skill metadata and local links; this changes guidance, not runtime code.
+
 ## Open issues
 
 | # | Found | What happens | Evidence | Notes |
@@ -17,6 +24,8 @@ A fix counts as confirmed once it has been played through again.
 
 | # | What was wrong | Fix | Commit |
 |---|---|---|---|
+| 9 | Fresh installs failed at "Generating the port": setup.sh cloned doldecomp/melee at upstream master, which has moved past the pinned revision bootstrap_port.py requires (issue #3, Tahoe 26.5.1). | setup.sh now checks the decomp checkout out at the pinned revision (fetch by commit, detach) and the pin error names the remedy: run ./setup.sh. | see git log |
+| 10 | Esc-menu Volume muted music at 0%, but jukebox music stayed at full level from 10% upward: the mixer scaled game samples before adding music at its own gain. | Apply the master volume to the jukebox contribution on Mac and Windows. A synthetic HPS track tests 0%, 10%, 50%, 100% and independent Music gain; the player confirmed the live fix. | see git log |
 | 1 | GameCube adapter never read on this Mac: `ReadPipeTO` on the interrupt pipe returns `kIOReturnBadArgument`, so the reader thread gave up after 20 failures. | Fall back to blocking `ReadPipe` when timed reads are rejected; abort the pipe on close so the blocking read wakes. | see git log |
 | 2 | No way to quit from full screen except the Dock. | Cmd+Q requests exit from the SDL event loop. | see git log |
 | 3 | HUD showed any adapter rate below 900 Hz as "125 Hz" (the Mayflash overclocks to ~540 Hz). | Show the measured rate. | see git log |
@@ -50,3 +59,23 @@ that frame; reading the translated `ftCo_80099794` next to the UCF cave found th
 
 - `install.sh` does not work as-is: its `--depth 1` clone lacks the upstream commit `bootstrap_port.py` checks, and `setup.sh` clones doldecomp/melee at HEAD instead of the pinned revision. Workaround: full clone, and `git -C deps/melee checkout 05a1394faea2aac458e4bdd030621d8a5631ae62`.
 - 1000 Hz polling without a driver (the README claim) did not work here: `SetPipePolicy` is rejected, and with no driver Apple's HID driver owns the adapter exclusively. The legacy GCAdapterDriver.kext (Permissive Security, SIP off) gives ~540 Hz, which looks like the Mayflash hardware cap.
+
+## iPhone Duo reserved-region correction — 2026-09-27
+
+The Apple window bridge calculated pixel scale from output slots immediately after clearing them,
+so safe-area and fold geometry stayed at 1× on Retina displays. It also projected each camera region
+onto every edge, potentially consuming most of the touch-control area. Derive scale from the Metal
+view and drawable, intersect camera regions with the view, and reserve only their nearest edge beyond
+the existing safe inset. Verified with seven 3× geometry cases and successful iOS simulator/macOS
+builds. Live fold transitions and camera avoidance across all poses remain unverified.
+
+## iOS dashboard redesign — 2026-09-27
+
+The Duo outer-display baseline clipped the identity and section headings, and Play sat below all
+settings. Replaced the oversized hero with compact branding, moved Play and setup first, and made
+settings and history rows wrap within safe-area columns. Columns now use UIKit's local reserved
+region coordinates and the actual available width. Rounded glass cards retain Melee's yellow
+headers; primary actions use a filled yellow surface for readable dark text. The seven-choice
+resolution picker is a native menu. Launcher display information uses its own scene, and entrance
+and Play animations respect Reduce Motion. See `docs/IPHONE_DUO.md` for the simulator evidence
+and remaining pose checks. macOS and iOS simulator builds pass.

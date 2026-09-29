@@ -66,7 +66,8 @@ bool window_sync_apple(void* uiwindow, float* out) {
     CAMetalLayer* layer = (CAMetalLayer*)metal_view.layer;
     CGSize drawable = layer.drawableSize;
     const UIEdgeInsets insets = metal_view.safeAreaInsets;
-    const float px_per_pt = out[0] && out[2] ? (float)drawable.width / (float)metal_view.bounds.size.width : 1.0f;
+    const float px_per_pt = metal_view.bounds.size.width > 0
+        ? (float)drawable.width / (float)metal_view.bounds.size.width : 1.0f;
     out[0] = (float)drawable.width;   out[1] = (float)drawable.height;   // client pixels
     out[2] = (float)metal_view.bounds.size.width;                        // points
     out[3] = (float)metal_view.bounds.size.height;
@@ -82,11 +83,18 @@ bool window_sync_apple(void* uiwindow, float* out) {
       const CGRect bounds = metal_view.bounds;
       for (UIViewReservedRegion* region in [metal_view reservedRegionsOfKind:[UIViewReservedRegionKind occlusionRegionKind]]) {
         if (!region.isActive) continue;
-        const CGRect f = region.frame;
-        out[9] = std::max(out[9], (float)(CGRectGetMaxX(f) - insets.left) * px_per_pt);                     // reaches in from the left
-        out[10] = std::max(out[10], (float)(insets.right - CGRectGetMinX(f)) * px_per_pt);                  // from the right
-        out[8] = std::max(out[8], (float)(CGRectGetMaxY(f) - insets.top) * px_per_pt);                      // from the top
-        out[11] = std::max(out[11], (float)(insets.bottom - (bounds.size.height - CGRectGetMinY(f))) * px_per_pt);  // from the bottom
+        // UIKit supplies this frame in metal_view coordinates, including its interaction margins.
+        const CGRect f = CGRectIntersection(bounds, region.frame);
+        if (CGRectIsNull(f) || CGRectIsEmpty(f)) continue;
+        // Our touch layout accepts edge insets. Project a camera onto its nearest edge only:
+        // treating an interior camera as an obstruction on every edge can consume the whole view.
+        const CGFloat gaps[] = {CGRectGetMinY(f) - CGRectGetMinY(bounds), CGRectGetMinX(f) - CGRectGetMinX(bounds),
+                                CGRectGetMaxX(bounds) - CGRectGetMaxX(f), CGRectGetMaxY(bounds) - CGRectGetMaxY(f)};
+        const int edge = (int)(std::min_element(gaps, gaps + 4) - gaps);
+        const CGFloat depths[] = {CGRectGetMaxY(f) - CGRectGetMinY(bounds), CGRectGetMaxX(f) - CGRectGetMinX(bounds),
+                                  CGRectGetMaxX(bounds) - CGRectGetMinX(f), CGRectGetMaxY(bounds) - CGRectGetMinY(f)};
+        const CGFloat safe[] = {insets.top, insets.left, insets.right, insets.bottom};
+        out[8 + edge] = std::max(out[8 + edge], (float)std::max((CGFloat)0, depths[edge] - safe[edge]) * px_per_pt);
       }
       out[9] = std::max(0.0f, out[9]); out[10] = std::max(0.0f, out[10]);
       out[8] = std::max(0.0f, out[8]); out[11] = std::max(0.0f, out[11]);
