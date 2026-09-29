@@ -94,9 +94,11 @@ namespace gecko {
 const uint8_t slippi_gct[] = {0};
 const size_t slippi_gct_size = 0;
 const uint32_t gct_base_used = 0, optional_gct_offset = 0;
-const OptionalWrite optional_writes[] = {{0, 0, nullptr, nullptr}};
+const CodeTable slippi_gct_options[4] = {};
+const OptionalWrite optional_writes[] = {{0, 0, nullptr, nullptr, nullptr}};
 const size_t optional_writes_count = 0;
 bool option_widescreen = false;
+bool option_flash_failed_lcancel = false;
 }
 namespace slippi::playback {
 void prepare_game_info(const uint8_t*, std::vector<uint8_t>&) {}

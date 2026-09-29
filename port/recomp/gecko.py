@@ -19,9 +19,12 @@ CODEHANDLER_BASE = 0x80001800
 BOOTLOADER_BASE = 0x800028B8   # codehandler.bin length (4288) - 8, per Gecko::InstallCodeHandler
 
 
-# Codes the port compiles in but lets the player switch at run time (PC settings). Their table
-# entries go last in the GCT so every other cave keeps its address whether they are on or off.
-RUNTIME_OPTIONAL = {"Optional: Widescreen 16:9": "widescreen"}
+# Codes compiled in for player options. Their table entries follow the required codes so the
+# addresses of required caves remain stable for every selection.
+RUNTIME_OPTIONAL = {
+    "Optional: Widescreen 16:9": "widescreen",
+    "Optional: Flash Red on Failed L-Cancel": "flash_failed_lcancel",
+}
 
 
 class GeckoCode:
@@ -69,19 +72,21 @@ def load_ini(path):
 
 
 def generate_gct(codes, include_optional=True):
-    """Byte-for-byte Gecko::GenerateGct for the enabled codes, with the run-time optional codes
-    moved to the end. Returns (table, offset of the optional section)."""
+    """Byte-for-byte Gecko::GenerateGct for enabled codes, with optional codes last.
+    `include_optional` selects all, none, or a set of option flags. Returns (table, optional offset)."""
     out = bytearray(struct.pack(">II", 0x00D0C0DE, 0x00D0C0DE))
     for code in codes:
         if code.enabled and code.optional is None:
             for a, d in code.codes:
                 out += struct.pack(">II", a, d)
     offset = len(out)
-    if include_optional:
-        for code in codes:
-            if code.enabled and code.optional is not None:
-                for a, d in code.codes:
-                    out += struct.pack(">II", a, d)
+    for code in codes:
+        if code.enabled and code.optional is not None and (
+            include_optional is True or
+            include_optional is not False and code.optional in include_optional
+        ):
+            for a, d in code.codes:
+                out += struct.pack(">II", a, d)
     out += struct.pack(">II", 0xFF000000, 0)
     return bytes(out), offset
 
