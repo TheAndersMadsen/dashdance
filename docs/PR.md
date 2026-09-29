@@ -27,6 +27,14 @@ Details and evidence for each are in `docs/MAC_FIXES.md`.
 
 - A pipeline waiting in the boot-time precompile queue is compiled at once when a draw needs it. With a cold shader cache (after every app update) characters stayed invisible for up to a minute and a half while 900 pipelines compiled one at a time.
 
+- Input Integrity Lossless Adapter in PC (XInput) mode: the dashboard now names it, pairs it with its measured rate and
+  shows "USB · GameCube controller · polling at 1000 Hz" as soon as it is plugged in. On the Mac, USB controllers'
+  report rates are counted from their HID report stream instead of waiting for a stick to move, and they count as wired
+  (docs/MAC_FIXES.md fix 15). Both dashboards log the controller rows they show.
+- Fix the crash when a controller connects after launch (GameController's "Recursive or concurrent mutation detected"
+  assertion): the report-rate change handlers are installed after the connect notification, on the main queue (docs/MAC_FIXES.md fix 16).
+- The dashboards' controller card is logged (`dashboard: controller row: ...`) so a session log shows what the player saw.
+
 - Online games no longer end 30 s after connecting when the opponent's real port differs from the advertised one: an expired connection attempt under another address no longer marks the player as gone (docs/MAC_FIXES.md fix 14).
 
 ## Features

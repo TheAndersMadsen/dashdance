@@ -412,6 +412,7 @@ int main(int argc, char** argv) {
     gfx.cache_dir = cache_dir;
     backend = gx::create_metal_backend(layer, client_w, client_h, gfx);
     host::log("display: %.0f Hz refresh; the game simulates at 60 Hz and each frame is shown on the next refresh slot", host::window_refresh_rate());
+    host::window_input_init();   // already done when the launcher ran; with --iso the controllers must be open before readiness looks
     for (const host::ReadinessItem& item : host::competitive_readiness((int)host::window_refresh_rate(), settings.fullscreen || fullscreen_arg, online.delay))
       host::log("readiness: %s %s", item.ok ? "ok  " : "note", item.text.c_str());
     host::window_set_resize_callback([backend](int w, int h) { gx::metal_resize(backend, w, h); });

@@ -612,8 +612,10 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
     else std::snprintf(b, sizeof b, "USB · %s · polling at %.0f Hz; the host kept the adapter's default, try another USB port or hub", ports.empty() ? "no controller plugged in" : ports.c_str(), pad.report_hz);
     return b;
   }
-  if (pad.report_hz <= 0) std::snprintf(b, sizeof b, "%s · move a stick to measure the report rate", pad.wired ? "Wired" : "Bluetooth");
-  else std::snprintf(b, sizeof b, "%s · reports at %.0f Hz (%.1f ms)", pad.wired ? "Wired" : "Bluetooth", pad.report_hz, 1000.0 / pad.report_hz);
+  const char* link = pad.gamecube_controller ? (pad.wired ? "USB · GameCube controller" : "GameCube controller") : pad.wired ? "Wired" : "Bluetooth";
+  if (pad.report_hz <= 0) std::snprintf(b, sizeof b, "%s · move a stick to measure the report rate", link);
+  else if (pad.rate_counted) std::snprintf(b, sizeof b, "%s · polling at %.0f Hz (%.1f ms)", link, pad.report_hz, 1000.0 / pad.report_hz);
+  else std::snprintf(b, sizeof b, "%s · reports at %.0f Hz (%.1f ms)", link, pad.report_hz, 1000.0 / pad.report_hz);
   return b;
 }
 
@@ -1163,7 +1165,7 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
   UIButton* connect = [self button:@"Connect a Controller" symbol:@"dot.radiowaves.left.and.right" prominent:NO];
   [connect addTarget:self action:@selector(connectController) forControlEvents:UIControlEventTouchUpInside];
   [s addArrangedSubview:connect];
-  UILabel* help = [self label:@"Connect a Controller walks you through pairing a PlayStation, Xbox, Switch Pro or other Bluetooth controller; USB-C controllers work as soon as they are plugged in. Connected controllers appear here with their measured report rate, a GameCube port and Configure. The on-screen controller hides itself while a controller is connected. GameCube adapters need a Mac: iOS does not give apps raw USB access." size:13 weight:UIFontWeightRegular alpha:0.6];
+  UILabel* help = [self label:@"Connect a Controller walks you through pairing a PlayStation, Xbox, Switch Pro or other Bluetooth controller; USB-C controllers work as soon as they are plugged in. Connected controllers appear here with their measured report rate, a GameCube port and Configure. The on-screen controller hides itself while a controller is connected. Wii U / Switch GameCube adapters need a Mac: iOS does not give apps raw USB access. An Input Integrity Lossless Adapter in PC (XInput) mode presents itself as a wired Xbox controller, which iOS 18 and later support over USB-C; this has not been tried on a device yet." size:13 weight:UIFontWeightRegular alpha:0.6];
   [s addArrangedSubview:help];
   return card;
 }
@@ -1375,6 +1377,7 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
   }
   for (size_t i = 0; i < pads.size(); ++i) {
     const host::ControllerInfo& pad = pads[i];
+    host::log("dashboard: controller row: %s · %s", pad.name.c_str(), controller_rate_line(pad).c_str());   // what the card shows, for the session log
     UIStackView* row = [[UIStackView alloc] init]; row.axis = UILayoutConstraintAxisHorizontal; row.spacing = 10; row.alignment = UIStackViewAlignmentCenter;
     UIImageView* icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"gamecontroller.fill"]];
     icon.tintColor = kYellow(); icon.contentMode = UIViewContentModeScaleAspectFit; [icon.widthAnchor constraintEqualToConstant:26].active = YES;

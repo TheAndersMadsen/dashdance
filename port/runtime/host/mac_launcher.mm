@@ -34,8 +34,10 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
     else std::snprintf(b, sizeof b, "USB · %s · polling at %.0f Hz; the host kept the adapter's default, try another USB port or hub", ports.empty() ? "no controller plugged in" : ports.c_str(), pad.report_hz);
     return b;
   }
-  if (pad.report_hz <= 0) std::snprintf(b, sizeof b, "%s · move a stick to measure the report rate", pad.wired ? "Wired" : "Bluetooth");
-  else std::snprintf(b, sizeof b, "%s · reports at %.0f Hz (%.1f ms)", pad.wired ? "Wired" : "Bluetooth", pad.report_hz, 1000.0 / pad.report_hz);
+  const char* link = pad.gamecube_controller ? (pad.wired ? "USB · GameCube controller" : "GameCube controller") : pad.wired ? "Wired" : "Bluetooth";
+  if (pad.report_hz <= 0) std::snprintf(b, sizeof b, "%s · move a stick to measure the report rate", link);
+  else if (pad.rate_counted) std::snprintf(b, sizeof b, "%s · polling at %.0f Hz (%.1f ms)", link, pad.report_hz, 1000.0 / pad.report_hz);
+  else std::snprintf(b, sizeof b, "%s · reports at %.0f Hz (%.1f ms)", link, pad.report_hz, 1000.0 / pad.report_hz);
   return b;
 }
 
@@ -535,7 +537,7 @@ static NSButton* pairing_button(NSString* title, NSString* sym, id target, SEL a
   for (NSView* v in @[self.spinner, self.check, self.status]) [statusRow addArrangedSubview:v];
   [col addArrangedSubview:statusRow];
   [col setCustomSpacing:24 afterView:statusRow];
-  [col addArrangedSubview:pairing_body(@"Using a cable? A USB controller works the moment you plug it in. GameCube controllers: plug a Wii U / Switch GameCube adapter (WUP-028, or a Mayflash in Wii U mode) into USB; Dashdance reads it directly at 1000 Hz.")];
+  [col addArrangedSubview:pairing_body(@"Using a cable? A USB controller works the moment you plug it in. GameCube controllers: plug a Wii U / Switch GameCube adapter (WUP-028, or a Mayflash in Wii U mode) into USB; Dashdance reads it directly at 1000 Hz. An Input Integrity Lossless Adapter works in either of its modes: Switch/Dolphin mode is read like the WUP-028, and PC (XInput) mode arrives through macOS's own Xbox controller driver, also at 1000 Hz.")];
 
   NSButton* done = pairing_button(@"Done", @"checkmark", self, @selector(close), YES); done.keyEquivalent = @"\r";
   done.translatesAutoresizingMaskIntoConstraints = NO;
@@ -1179,7 +1181,7 @@ static NSButton* pairing_button(NSString* title, NSString* sym, id target, SEL a
   self.controllersStack = [[MUColumn alloc] init]; self.controllersStack.spacing = 8;
   [s addArrangedSubview:self.controllersStack];
   [s addArrangedSubview:[self button:@"Connect a Controller…" symbol:@"dot.radiowaves.left.and.right" action:@selector(connectController)]];
-  [s addArrangedSubview:label(@"Connect a Controller walks you through pairing a PlayStation, Xbox, Switch Pro or other Bluetooth controller. A Wii U / Switch GameCube adapter (WUP-028, or a Mayflash in Wii U mode) is read directly over USB and asked to poll at 1000 Hz; the rate shown is what your port actually delivers. Configure opens a live view of the controller: remap buttons, set stick deadzones, the trigger press point and rumble. The keyboard layout is configured the same way.", 11, NSFontWeightRegular, 0.6)];
+  [s addArrangedSubview:label(@"Connect a Controller walks you through pairing a PlayStation, Xbox, Switch Pro or other Bluetooth controller. A Wii U / Switch GameCube adapter (WUP-028, or a Mayflash in Wii U mode) is read directly over USB and asked to poll at 1000 Hz; the rate shown is what your port actually delivers. An Input Integrity Lossless Adapter works in either mode (Switch/Dolphin, or PC XInput through macOS's Xbox driver), and USB controllers show their polling rate as soon as they are plugged in. Configure opens a live view of the controller: remap buttons, set stick deadzones, the trigger press point and rumble. The keyboard layout is configured the same way.", 11, NSFontWeightRegular, 0.6)];
   return card;
 }
 - (NSView*)buildReadiness {
@@ -1378,6 +1380,7 @@ static NSButton* pairing_button(NSString* title, NSString* sym, id target, SEL a
 - (void)refreshControllers {
   std::vector<host::ControllerInfo> pads = host::window_list_controllers();
   self.controllerCount = pads.size();
+  for (const host::ControllerInfo& pad : pads) host::log("dashboard: controller row: %s · %s", pad.name.c_str(), controller_rate_line(pad).c_str());   // what the card shows, for the session log
   for (NSView* v in self.controllersStack.arrangedSubviews) [v removeFromSuperview];
   NSStackView* keyboard = [self controllerRow:@"keyboard" title:@"Keyboard" subtitle:[self keyboardSummary]];
   [keyboard addArrangedSubview:[self button:@"Configure…" symbol:@"slider.horizontal.3" action:@selector(configureKeyboard)]];

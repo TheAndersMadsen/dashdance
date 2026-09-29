@@ -61,6 +61,8 @@ struct ControllerInfo {
   bool wired = false;          // connector rather than Bluetooth
   uint32_t adapter_ports = 0;  // GameCube adapter: bit per port with a controller plugged in
   int adapter_interval_ms = 0; // GameCube adapter: the polling interval the USB host accepted
+  bool rate_counted = false;   // report_hz counted from the USB report stream (known without moving a stick)
+  bool gamecube_controller = false;   // a GameCube controller behind a PC-mode adapter (Input Integrity Lossless Adapter in XInput mode)
 };
 void window_input_init();                              // SDL gamepad subsystem without a window
 std::vector<ControllerInfo> window_list_controllers();

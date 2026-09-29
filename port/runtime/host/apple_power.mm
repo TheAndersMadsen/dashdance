@@ -133,16 +133,20 @@ std::vector<ReadinessItem> competitive_readiness(int display_hz, bool fullscreen
     case 4: v.push_back({true, "Connected to the network"}); break;
     default: break;
   }
-  bool adapter = false, pad = false, wired = false;
+  bool adapter = false, pad = false, wired = false, gamecube = false;
   double adapter_hz = 0, pad_hz = 0;
   for (const ControllerInfo& c : window_list_controllers()) {
     if (c.is_gamecube_adapter) { adapter = true; adapter_hz = c.report_hz; }
-    else { pad = true; pad_hz = std::max(pad_hz, c.report_hz); wired = wired || c.wired; }
+    else { pad = true; pad_hz = std::max(pad_hz, c.report_hz); wired = wired || c.wired; gamecube = gamecube || c.gamecube_controller; }
   }
   if (adapter) {
     if (adapter_hz >= 900) { std::snprintf(b, sizeof b, "GameCube adapter polling at %.0f Hz", adapter_hz); v.push_back({true, b}); }
     else if (adapter_hz > 0) { std::snprintf(b, sizeof b, "GameCube adapter at %.0f Hz: another USB port usually gives 1000 Hz", adapter_hz); v.push_back({false, b}); }
     else v.push_back({true, "GameCube adapter connected (measuring its polling rate)"});
+  } else if (pad && gamecube) {
+    if (pad_hz >= 900) { std::snprintf(b, sizeof b, "GameCube controller through the Lossless Adapter at %.0f Hz", pad_hz); v.push_back({true, b}); }
+    else if (pad_hz > 0) { std::snprintf(b, sizeof b, "GameCube controller through the Lossless Adapter at %.0f Hz: it can do 1000 Hz, try another USB port", pad_hz); v.push_back({false, b}); }
+    else v.push_back({true, "GameCube controller through the Lossless Adapter: move a stick to measure its report rate"});
   } else if (pad) {
     if (pad_hz <= 0) v.push_back({true, "Controller connected: move a stick to measure its report rate"});
     else if (wired) { std::snprintf(b, sizeof b, "Wired controller reporting at %.0f Hz", pad_hz); v.push_back({true, b}); }

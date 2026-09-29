@@ -67,7 +67,7 @@ Every other way to play Melee on a Mac runs a GameCube in software, one instruct
 
 - **Shown on the next refresh.** Each finished frame goes to your display's very next refresh, at whatever rate your display runs.
 - **Your inputs, read last.** Controllers are read right before each frame starts.
-- **GameCube controllers at 1000 Hz.** Plug in a GameCube adapter for Wii U and Switch. No driver, no security changes.
+- **GameCube controllers at 1000 Hz.** Plug in a GameCube adapter for Wii U and Switch, or an Input Integrity Lossless Adapter in either of its modes. No driver, no security changes.
 - **Your delay, your call.** Pick Slippi's online input delay yourself, from 1 frame.
 - **Ready to compete.** The dashboard flags a 60 Hz display, Wi-Fi instead of a cable, a slow controller, Low Power Mode and Bluetooth audio.
 

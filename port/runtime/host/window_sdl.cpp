@@ -348,6 +348,8 @@ void open_gamepad(SDL_JoystickID id) {
   if (SDL_Gamepad* pad = SDL_OpenGamepad(id)) {
     g_gamepads.push_back(pad);
     log("input: gamepad connected: %s (vendor %04x product %04x)", SDL_GetGamepadName(pad), SDL_GetGamepadVendor(pad), SDL_GetGamepadProduct(pad));
+    char* mapping = SDL_GetGamepadMapping(pad);
+    if (mapping) { log("input: gamepad mapping: %s", mapping); SDL_free(mapping); }   // which physical inputs SDL turns into A/B/X/Y, shoulders and triggers
   }
 }
 void close_gamepad(SDL_JoystickID id) {
@@ -564,10 +566,10 @@ void window_set_fullscreen(bool enabled) { if (g_window) SDL_SetWindowFullscreen
 
 // ---- launcher services: controllers without a window
 void window_input_init() {
-  controller_rate_init();
   static bool done = false;
   if (done) return;
   done = true;
+  controller_rate_init();
   SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
   if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_EVENTS)) { log("input: SDL gamepad init failed: %s", SDL_GetError()); return; }
   int count = 0;
@@ -591,14 +593,36 @@ std::vector<ControllerInfo> window_list_controllers() {
     if (event.type == SDL_EVENT_GAMEPAD_ADDED) open_gamepad(event.gdevice.which);
     else if (event.type == SDL_EVENT_GAMEPAD_REMOVED) close_gamepad(event.gdevice.which);
   }
-  for (SDL_Gamepad* pad : g_gamepads) {
+  // Pair each SDL gamepad with the framework's report for it. SDL names GameController pads by category
+  // ("Xbox One Wireless Controller" for anything Apple's Xbox driver handles, including the Lossless
+  // Adapter in XInput mode), so a name match is tried first and the leftovers are paired in order.
+  std::vector<bool> used(reports.size(), false);
+  std::vector<int> report_for(g_gamepads.size(), -1);
+  for (size_t i = 0; i < g_gamepads.size(); ++i) {
+    const std::string name = SDL_GetGamepadName(g_gamepads[i]) ? SDL_GetGamepadName(g_gamepads[i]) : "Controller";
+    for (size_t j = 0; j < reports.size(); ++j) {
+      const ControllerReport& r = reports[j];
+      if (used[j]) continue;
+      if (r.name == name || name.find(r.name) != std::string::npos || r.name.find(name) != std::string::npos) { used[j] = true; report_for[i] = (int)j; break; }
+    }
+  }
+  for (size_t i = 0; i < g_gamepads.size(); ++i) {
+    if (report_for[i] >= 0) continue;
+    for (size_t j = 0; j < reports.size(); ++j) if (!used[j]) { used[j] = true; report_for[i] = (int)j; break; }
+  }
+  for (size_t i = 0; i < g_gamepads.size(); ++i) {
+    SDL_Gamepad* pad = g_gamepads[i];
     ControllerInfo info;
     info.name = SDL_GetGamepadName(pad) ? SDL_GetGamepadName(pad) : "Controller";
     info.guid = gamepad_guid(pad);
     info.instance_id = SDL_GetGamepadID(pad);
     if (const ControllerConfig* cfg = controller_config_for(info.guid)) info.assigned_port = cfg->port;
-    for (const ControllerReport& r : reports)
-      if (r.name == info.name || info.name.find(r.name) != std::string::npos || r.name.find(info.name) != std::string::npos) { info.report_hz = r.hz; info.wired = r.wired; break; }
+    if (report_for[i] >= 0) {
+      const ControllerReport& r = reports[report_for[i]];
+      info.report_hz = r.hz; info.wired = r.wired; info.rate_counted = r.counted;
+      if (!r.name.empty() && r.name != "Controller") info.name = r.name;   // the device's own product string, not SDL's category guess
+    }
+    info.gamecube_controller = info.name.find("Lossless") != std::string::npos;
     list.push_back(info);
   }
   return list;
