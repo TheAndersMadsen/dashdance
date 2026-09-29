@@ -97,7 +97,7 @@ void render(int16_t* out, uint32_t want) {
     const uint64_t n = g_underruns.fetch_add(1) + 1; g_underrun_frames.fetch_add(starved);
     if (n <= 5 || (n % 100) == 0) log("audio: underrun %llu (%u frames of silence); raise MELEE_AUDIO_SLACK_MS if this repeats", (unsigned long long)n, starved);
   }
-  if (volume > 0) slippi::jukebox::mix(out, want);
+  if (volume > 0) slippi::jukebox::mix(out, want, volume);
 }
 
 void SDLCALL stream_callback(void*, SDL_AudioStream* stream, int additional_amount, int) {

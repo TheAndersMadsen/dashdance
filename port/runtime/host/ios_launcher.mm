@@ -73,13 +73,11 @@ std::vector<std::string> documents_discs(NSURL** documents_out) {
   }
   return discs;
 }
-int display_max_hz() {
+int display_max_hz(UIView* view) {
 #if TARGET_OS_VISION
   return 90;
 #else
-  UIScreen* screen = nil;   // the screen the app's scene is on (iPhone Duo has two), not a global main screen
-  for (UIScene* s in UIApplication.sharedApplication.connectedScenes) if ([s isKindOfClass:UIWindowScene.class]) { screen = ((UIWindowScene*)s).screen; break; }
-  return (int)(screen ?: UIScreen.mainScreen).maximumFramesPerSecond;
+  return (int)view.window.windowScene.screen.maximumFramesPerSecond;
 #endif
 }
 }  // namespace
@@ -626,7 +624,7 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
 @property(nonatomic) BOOL done, playPressed, busy;
 @property(nonatomic) UIScrollView* scroll;
 @property(nonatomic) UIStackView* cardColumns; @property(nonatomic) NSLayoutConstraint* maxWidth;   // two columns of cards when wide
-@property(nonatomic) NSLayoutConstraint *foldLeft, *foldRight;   // active only while a fold band splits the two columns
+@property(nonatomic) NSLayoutConstraint* foldLeft;   // active only while a fold band splits the two columns
 @property(nonatomic) UIStackView *foldLeftCards, *foldRightCards;
 @property(nonatomic) UIStackView* stack;
 @property(nonatomic) NSArray<UIView*>* entrance;
@@ -647,7 +645,8 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
 @property(nonatomic) UIStackView* readinessStack; @property(nonatomic) std::string readinessSignature; @property(nonatomic) UIStackView* controllersStack; @property(nonatomic) NSTimer* controllerTimer; @property(nonatomic) NSUInteger controllerCount; @property(nonatomic) std::string controllerSignature;
 // display
 @property(nonatomic) UILabel* regionLabel;
-@property(nonatomic) UISegmentedControl* scaleControl; @property(nonatomic) UISegmentedControl* anisoControl; @property(nonatomic) UISegmentedControl* upscalerControl; @property(nonatomic) UISwitch* vsyncSwitch; @property(nonatomic) UISwitch* widescreenSwitch; @property(nonatomic) UISwitch* flashLCancelSwitch; @property(nonatomic) UISlider* sharpnessSlider; @property(nonatomic) UISwitch* onlineSwitch; @property(nonatomic) UISegmentedControl* delayControl;
+@property(nonatomic) UILabel* displayInfoLabel; @property(nonatomic, copy) NSString* displayDeviceName;
+@property(nonatomic) UIButton* scaleControl; @property(nonatomic) int resolutionScale; @property(nonatomic) UISegmentedControl* anisoControl; @property(nonatomic) UISegmentedControl* upscalerControl; @property(nonatomic) UISwitch* vsyncSwitch; @property(nonatomic) UISwitch* widescreenSwitch; @property(nonatomic) UISwitch* flashLCancelSwitch; @property(nonatomic) UISlider* sharpnessSlider; @property(nonatomic) UISwitch* onlineSwitch; @property(nonatomic) UISegmentedControl* delayControl;
 @property(nonatomic) UISlider* overlaySlider; @property(nonatomic) UISlider* overlayScaleSlider;
 @property(nonatomic) UIButton* playButton;
 @end
@@ -685,14 +684,14 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
   [NSLayoutConstraint activateConstraints:@[
     [self.scroll.topAnchor constraintEqualToAnchor:self.view.topAnchor], [self.scroll.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
     [self.scroll.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor], [self.scroll.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-    // Cards are centred on the display itself, not on the safe area, so two columns split evenly around iPhone Duo's fold
-    // even when system controls sit along one edge; they still never enter the safe-area insets.
+    // Foreground uses the available safe width; the backdrop alone spans the full display.
+    // Active fold regions determine the column widths separately below.
     [self.stack.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:20],
     [self.stack.trailingAnchor constraintLessThanOrEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-20],
-    [self.stack.topAnchor constraintEqualToAnchor:self.scroll.contentLayoutGuide.topAnchor constant:44], [self.stack.bottomAnchor constraintEqualToAnchor:self.scroll.contentLayoutGuide.bottomAnchor constant:-48],
-    [self.stack.centerXAnchor constraintEqualToAnchor:self.scroll.frameLayoutGuide.centerXAnchor]]];
+    [self.stack.topAnchor constraintEqualToAnchor:self.scroll.contentLayoutGuide.topAnchor constant:20], [self.stack.bottomAnchor constraintEqualToAnchor:self.scroll.contentLayoutGuide.bottomAnchor constant:-48],
+    [self.stack.centerXAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.centerXAnchor]]];
   self.maxWidth = [self.stack.widthAnchor constraintLessThanOrEqualToConstant:640]; self.maxWidth.active = YES;
-  NSLayoutConstraint* width = [self.stack.widthAnchor constraintEqualToAnchor:self.scroll.frameLayoutGuide.widthAnchor constant:-40];
+  NSLayoutConstraint* width = [self.stack.widthAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.widthAnchor constant:-40];
   width.priority = UILayoutPriorityDefaultHigh; width.active = YES;
   [self.stack.widthAnchor constraintLessThanOrEqualToAnchor:self.scroll.frameLayoutGuide.widthAnchor constant:-32].active = YES;   // never wider than a phone
   UITapGestureRecognizer* tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(dismissKeyboard)];
@@ -717,14 +716,14 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
   UIStackView* leftCards = [[UIStackView alloc] init]; leftCards.axis = UILayoutConstraintAxisVertical; leftCards.spacing = 16;
   UIStackView* rightCards = [[UIStackView alloc] init]; rightCards.axis = UILayoutConstraintAxisVertical; rightCards.spacing = 16;
   self.foldLeftCards = leftCards; self.foldRightCards = rightCards;
-  for (UIView* v in @[self.stepsCard, self.rankedCard, self.gamesCard, self.accountCard]) [leftCards addArrangedSubview:v];   // you
-  for (UIView* v in @[readiness, disc, controllers, display, touch, regionCard]) [rightCards addArrangedSubview:v];                      // the setup
+  for (UIView* v in @[self.playButton, disc, self.stepsCard, controllers, readiness, touch]) [leftCards addArrangedSubview:v]; // play and controls
+  for (UIView* v in @[self.rankedCard, self.gamesCard, self.accountCard, display, regionCard]) [rightCards addArrangedSubview:v]; // online and preferences
   self.cardColumns = [[UIStackView alloc] initWithArrangedSubviews:@[leftCards, rightCards]];
   self.cardColumns.axis = UILayoutConstraintAxisVertical; self.cardColumns.spacing = 16;
-  for (UIView* v in @[hero, self.cardColumns, self.playButton, footer]) [self.stack addArrangedSubview:v];
-  [self.stack setCustomSpacing:28 afterView:hero];
+  for (UIView* v in @[hero, self.cardColumns, footer]) [self.stack addArrangedSubview:v];
+  [self.stack setCustomSpacing:20 afterView:hero];
   self.entrance = @[hero, self.stepsCard, self.rankedCard, self.gamesCard, self.accountCard, disc, controllers, display, touch, regionCard, self.playButton];
-  for (UIView* v in self.entrance) { v.alpha = 0; v.transform = CGAffineTransformMakeTranslation(0, 24); }
+  for (UIView* v in self.entrance) { v.alpha = UIAccessibilityIsReduceMotionEnabled() ? 1 : 0; v.transform = UIAccessibilityIsReduceMotionEnabled() ? CGAffineTransformIdentity : CGAffineTransformMakeTranslation(0, 24); }
   [self refreshDisc]; [self refreshAccount]; [self refreshControllers]; [self refreshSteps]; [self refreshReadiness];
   [self loadDashboard];
   self.controllerTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(controllerTick) userInfo:nil repeats:YES];
@@ -734,10 +733,10 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
 }
 - (void)viewDidAppear:(BOOL)animated {
   [super viewDidAppear:animated];
-  NSTimeInterval delay = 0.1;
+  NSTimeInterval delay = 0.0;
   for (UIView* v in self.entrance) {
-    [UIView animateWithDuration:0.7 delay:delay usingSpringWithDamping:0.82 initialSpringVelocity:0.4 options:UIViewAnimationOptionAllowUserInteraction animations:^{ v.alpha = 1; v.transform = CGAffineTransformIdentity; } completion:nil];
-    delay += 0.06;
+    [UIView animateWithDuration:UIAccessibilityIsReduceMotionEnabled() ? 0 : 0.35 delay:delay usingSpringWithDamping:0.82 initialSpringVelocity:0.4 options:UIViewAnimationOptionAllowUserInteraction animations:^{ v.alpha = 1; v.transform = CGAffineTransformIdentity; } completion:nil];
+    if (!UIAccessibilityIsReduceMotionEnabled()) delay += 0.025;
   }
   if (const char* scroll = std::getenv("MELEE_LAUNCHER_SCROLL"))   // screenshot aid: start scrolled down by N points
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [self.scroll setContentOffset:CGPointMake(0, std::atof(scroll)) animated:NO]; });
@@ -776,6 +775,7 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
       [self presentViewController:rm animated:NO completion:nil];
     });
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    if (UIAccessibilityIsReduceMotionEnabled()) return;
     CABasicAnimation* breathe = [CABasicAnimation animationWithKeyPath:@"transform.scale"];
     breathe.fromValue = @1.0; breathe.toValue = @1.02; breathe.duration = 1.6; breathe.autoreverses = YES; breathe.repeatCount = HUGE_VALF;
     breathe.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
@@ -795,7 +795,7 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
     if (@available(iOS 26.0, *)) {
       // Concentric with the display: the card corners echo the screen's curvature instead of an
       // arbitrary 22 pt, the way Apple asks for on iPhone Duo and iOS 26 generally.
-      UICornerConfiguration* corners = [UICornerConfiguration configurationWithRadius:[UICornerRadius containerConcentricRadius]];
+      UICornerConfiguration* corners = [UICornerConfiguration configurationWithRadius:[UICornerRadius containerConcentricRadiusWithMinimum:20]];
       card.cornerConfiguration = corners;
     } else {
       card.layer.cornerRadius = 22;
@@ -806,7 +806,7 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
 #endif
   card = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialDark]];
   if (@available(iOS 26.0, *)) {
-    UICornerConfiguration* corners = [UICornerConfiguration configurationWithRadius:[UICornerRadius containerConcentricRadius]];
+    UICornerConfiguration* corners = [UICornerConfiguration configurationWithRadius:[UICornerRadius containerConcentricRadiusWithMinimum:20]];
     card.cornerConfiguration = corners;
   } else {
     card.layer.cornerRadius = 18;
@@ -847,77 +847,74 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
 - (UIView*)header:(NSString*)text symbol:(NSString*)symbol {
   UIView* bar = [[UIView alloc] init];
   bar.translatesAutoresizingMaskIntoConstraints = NO;
-  [bar.heightAnchor constraintEqualToConstant:30].active = YES;
+  [bar.heightAnchor constraintGreaterThanOrEqualToConstant:32].active = YES;
   CAShapeLayer* shape = [CAShapeLayer layer];
   shape.fillColor = kYellow().CGColor;
   bar.layer.mask = nil;
   [bar.layer insertSublayer:shape atIndex:0];
   UILabel* l = [[UILabel alloc] init];
-  l.text = text; l.font = meleeFont(15, UIFontWeightBold); l.textColor = rgb(0.10, 0.08, 0.02);
+  l.text = text; l.numberOfLines = 0; l.font = meleeFont(14, UIFontWeightBold); l.textColor = rgb(0.10, 0.08, 0.02);
   l.translatesAutoresizingMaskIntoConstraints = NO;
   UIImageView* icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:symbol]];
   icon.tintColor = rgb(0.10, 0.08, 0.02); icon.contentMode = UIViewContentModeScaleAspectFit; icon.translatesAutoresizingMaskIntoConstraints = NO;
   icon.preferredSymbolConfiguration = [UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightBold];
   [bar addSubview:icon]; [bar addSubview:l];
   [NSLayoutConstraint activateConstraints:@[[icon.leadingAnchor constraintEqualToAnchor:bar.leadingAnchor constant:16], [icon.centerYAnchor constraintEqualToAnchor:bar.centerYAnchor], [icon.widthAnchor constraintEqualToConstant:18],
-                                            [l.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:8], [l.centerYAnchor constraintEqualToAnchor:bar.centerYAnchor], [l.trailingAnchor constraintLessThanOrEqualToAnchor:bar.trailingAnchor constant:-20]]];
+                                            [l.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:8], [l.topAnchor constraintEqualToAnchor:bar.topAnchor constant:7], [l.bottomAnchor constraintEqualToAnchor:bar.bottomAnchor constant:-7], [l.trailingAnchor constraintEqualToAnchor:bar.trailingAnchor constant:-22]]];
   objc_setAssociatedObject(bar, "shape", shape, OBJC_ASSOCIATION_RETAIN);
   return bar;
 }
-// iPhone Duo partially folded: the inner display curves through a vertical division band, and a
-// 50/50 two-column layout puts cards in the curve. Rebalance the columns so each lives inside its
-// region (the gap lands on the band); flat, the band is inactive and the columns are equal again.
-// The scroll content itself is exempt from fold avoidance — this is about the columns as regions.
+// Keep each column outside the actual reserved band, not a guessed display midpoint.
 - (void)rebalanceColumnsForFold:(BOOL)wide {
-  if (!self.foldLeftCards) return;
-  if (@available(iOS 27.1, *)) {
-    if (wide) {
-      NSArray<UIViewReservedRegion*>* regions = [self.view reservedRegionsOfKind:[UIViewReservedRegionKind divisionRegionKind]];
-      for (UIViewReservedRegion* region in regions) {
-        if (!region.isActive) continue;
-        const CGRect f = [self.view convertRect:region.frame fromView:nil];
-        if (f.size.height <= f.size.width) break;   // a horizontal band: the columns straddle it fine
-        const CGFloat safeL = self.view.safeAreaInsets.left, safeR = self.view.safeAreaInsets.right;
-        const CGFloat left = CGRectGetMinX(f) - safeL, right = self.view.bounds.size.width - safeR - CGRectGetMaxX(f);
-        if (left < 240 || right < 240) break;   // too cramped to be worth rebalancing
-        const CGFloat total = self.cardColumns.bounds.size.width ?: (left + right);
-        if (total < 480) break;
-        self.cardColumns.distribution = UIStackViewDistributionFill;
-        const CGFloat w = total - 16;   // the stack's spacing
-        if (!self.foldLeft) {
-          self.foldLeft = [self.foldLeftCards.widthAnchor constraintEqualToConstant:w * left / (left + right)];
-          self.foldRight = [self.foldRightCards.widthAnchor constraintEqualToConstant:w * right / (left + right)];
-        } else {
-          self.foldLeft.constant = w * left / (left + right);
-          self.foldRight.constant = w * right / (left + right);
+  CGFloat spacing = 24, leftWidth = 0;
+  if (wide) {
+    if (@available(iOS 27.1, *)) {
+      const CGRect safe = self.view.safeAreaLayoutGuide.layoutFrame;
+      const CGFloat width = MIN(self.maxWidth.constant, safe.size.width - 40);
+      const CGRect columns = CGRectMake(CGRectGetMidX(safe) - width / 2, 0, width, safe.size.height);
+      for (UIViewReservedRegion* region in [self.view reservedRegionsOfKind:[UIViewReservedRegionKind divisionRegionKind]]) {
+        if (!region.isActive || region.frame.size.height <= region.frame.size.width) continue;
+        const CGRect fold = region.frame; // UIKit already reports this in self.view's coordinates.
+        const CGFloat left = CGRectGetMinX(fold) - CGRectGetMinX(columns);
+        const CGFloat right = CGRectGetMaxX(columns) - CGRectGetMaxX(fold);
+        if (left >= 280 && right >= 280) {
+          spacing = MAX(24, fold.size.width);
+          leftWidth = left - (spacing - fold.size.width) / 2;
         }
-        self.foldLeft.active = YES; self.foldRight.active = YES;
-        return;
+        break;
       }
     }
   }
-  if (self.foldLeft) { self.foldLeft.active = NO; self.foldRight.active = NO; }
-  if (self.cardColumns.axis == UILayoutConstraintAxisHorizontal) self.cardColumns.distribution = UIStackViewDistributionFillEqually;
+  self.cardColumns.spacing = wide ? spacing : 16;
+  self.cardColumns.distribution = wide && leftWidth == 0 ? UIStackViewDistributionFillEqually : UIStackViewDistributionFill;
+  if (leftWidth > 0) {
+    if (!self.foldLeft) self.foldLeft = [self.foldLeftCards.widthAnchor constraintEqualToConstant:leftWidth];
+    self.foldLeft.constant = leftWidth;
+    self.foldLeft.active = YES;
+  } else {
+    self.foldLeft.active = NO;
+  }
 }
-
 - (void)viewWillLayoutSubviews {
   [super viewWillLayoutSubviews];
-  // Wide screens (iPad in landscape, 13-inch iPads, Vision Pro windows) put the cards in two columns; phones and narrow
-  // windows keep one readable column in the same order.
-  // A regular-width environment with room for two readable columns: iPhone Duo open, iPads, large iPhones in landscape, Vision Pro windows.
-  const BOOL wide = self.traitCollection.horizontalSizeClass == UIUserInterfaceSizeClassRegular && self.view.bounds.size.width >= 800;
-  [self rebalanceColumnsForFold:wide];
+  // Two readable card columns, including their insets, must fit inside the safe area.
+  const CGFloat available = self.view.safeAreaLayoutGuide.layoutFrame.size.width - 40;
+  const BOOL wide = self.traitCollection.horizontalSizeClass == UIUserInterfaceSizeClassRegular && available >= 2 * 300 + 24;
   if (self.cardColumns && (self.cardColumns.axis == UILayoutConstraintAxisHorizontal) != wide) {
-    const BOOL atTop = self.scroll.contentOffset.y <= -self.scroll.adjustedContentInset.top + 1;   // a window resized while showing the top keeps showing the top
-    if (atTop) dispatch_async(dispatch_get_main_queue(), ^{ [self.scroll setContentOffset:CGPointMake(0, -self.scroll.adjustedContentInset.top) animated:NO]; });
+    self.foldLeft.active = NO;
     self.cardColumns.axis = wide ? UILayoutConstraintAxisHorizontal : UILayoutConstraintAxisVertical;
-    self.cardColumns.distribution = wide ? UIStackViewDistributionFillEqually : UIStackViewDistributionFill;
     self.cardColumns.alignment = wide ? UIStackViewAlignmentTop : UIStackViewAlignmentFill;
-    self.maxWidth.constant = wide ? 1180 : 640;
   }
+  self.maxWidth.constant = wide ? 1180 : 640;
+  [self rebalanceColumnsForFold:wide];
 }
 - (void)viewDidLayoutSubviews {
   [super viewDidLayoutSubviews];
+  const int hz = display_max_hz(self.view);
+  if (hz > 0) {
+    NSString* info = [NSString stringWithFormat:@"%@ · %d Hz display · %s\n60 fps simulation, frames shown on the next refresh", self.displayDeviceName, hz, host::thermal_state_name()];
+    if (![self.displayInfoLabel.text isEqualToString:info]) self.displayInfoLabel.text = info;
+  }
   // Wrapping labels learn their real width after layout; without this a label nested in stacks keeps one line and ends in "…".
   BOOL relayout = NO;
   for (UIView* v in [self allSubviewsOf:self.stack]) {
@@ -973,17 +970,23 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
   [l setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];   // on a phone the label wraps; the switch keeps its size
   keep_words_whole(l);                                                                                                // ...but only between words
   [control setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
-  [row addArrangedSubview:icon]; [row addArrangedSubview:l]; [row addArrangedSubview:control];
+  [row addArrangedSubview:icon]; [row addArrangedSubview:l];
+  if (![control isKindOfClass:UISwitch.class]) {
+    UIStackView* setting = [[UIStackView alloc] initWithArrangedSubviews:@[row, control]];
+    setting.axis = UILayoutConstraintAxisVertical; setting.spacing = 8;
+    return setting;
+  }
+  [row addArrangedSubview:control];
   if ([control isKindOfClass:UISlider.class]) {   // sliders shrink on narrow phones before any label does
     NSLayoutConstraint* prefer = [control.widthAnchor constraintEqualToConstant:170]; prefer.priority = UILayoutPriorityDefaultLow; prefer.active = YES;
     [control.widthAnchor constraintGreaterThanOrEqualToConstant:90].active = YES;
   }
   return row;
 }
-// Buttons are glass on iOS 26 (prominent glass for Play, tinted Melee yellow); filled/gray otherwise.
+// Secondary buttons use glass; yellow primary actions use a filled surface for reliable dark-text contrast.
 + (UIButtonConfiguration*)glassConfiguration:(BOOL)prominent {
 #if !TARGET_OS_VISION
-  if (@available(iOS 26.0, *)) return prominent ? [UIButtonConfiguration prominentGlassButtonConfiguration] : [UIButtonConfiguration glassButtonConfiguration];
+  if (@available(iOS 26.0, *)) return prominent ? [UIButtonConfiguration filledButtonConfiguration] : [UIButtonConfiguration glassButtonConfiguration];
 #endif
   return prominent ? [UIButtonConfiguration filledButtonConfiguration] : [UIButtonConfiguration grayButtonConfiguration];
 }
@@ -992,8 +995,11 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
   c.title = title; c.cornerStyle = UIButtonConfigurationCornerStyleCapsule; c.image = [UIImage systemImageNamed:symbol]; c.imagePadding = 8;
   c.preferredSymbolConfigurationForImage = [UIImageSymbolConfiguration configurationWithPointSize:16 weight:UIImageSymbolWeightBold];
   c.contentInsets = NSDirectionalEdgeInsetsMake(prominent ? 18 : 12, 20, prominent ? 18 : 12, 20);
-  if (prominent) { c.baseBackgroundColor = kYellow(); c.baseForegroundColor = rgb(0.1, 0.08, 0.02); } else c.baseForegroundColor = UIColor.whiteColor;
+  if (prominent) {
+    c.baseBackgroundColor = kYellow(); c.baseForegroundColor = rgb(0.1, 0.08, 0.02);
+  } else c.baseForegroundColor = UIColor.whiteColor;
   UIButton* b = [UIButton buttonWithConfiguration:c primaryAction:nil];
+  b.tintColor = prominent ? rgb(0.1, 0.08, 0.02) : UIColor.whiteColor;
   b.titleLabel.font = prominent ? meleeFont(22, UIFontWeightBold) : [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
   if (prominent && !glass_available()) { b.layer.shadowColor = kYellow().CGColor; b.layer.shadowOpacity = 0.45; b.layer.shadowRadius = 18; b.layer.shadowOffset = CGSizeMake(0, 6); }
   return b;
@@ -1021,27 +1027,28 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
 // ---- sections
 - (UIView*)buildHero {
   UIStackView* hero = [[UIStackView alloc] init];
-  hero.axis = UILayoutConstraintAxisVertical; hero.alignment = UIStackViewAlignmentCenter; hero.spacing = 8;
+  hero.axis = UILayoutConstraintAxisVertical; hero.alignment = UIStackViewAlignmentFill; hero.spacing = 12;
+  UIStackView* identity = [[UIStackView alloc] init];
+  identity.axis = UILayoutConstraintAxisHorizontal; identity.spacing = 14; identity.alignment = UIStackViewAlignmentCenter;
   if (UIImage* mark = slippi_mark()) {
-    UIView* disc = [self glassDisc:132];
+    UIView* disc = [self glassDisc:56];
     UIImageView* iv = [[UIImageView alloc] initWithImage:mark];
     iv.tintColor = UIColor.whiteColor; iv.contentMode = UIViewContentModeScaleAspectFit; iv.translatesAutoresizingMaskIntoConstraints = NO;
-    UIView* host = [disc isKindOfClass:UIVisualEffectView.class] ? ((UIVisualEffectView*)disc).contentView : disc;
+    UIView* host = ((UIVisualEffectView*)disc).contentView;
     [host addSubview:iv];
     [NSLayoutConstraint activateConstraints:@[[iv.centerXAnchor constraintEqualToAnchor:host.centerXAnchor], [iv.centerYAnchor constraintEqualToAnchor:host.centerYAnchor],
-                                              [iv.widthAnchor constraintEqualToConstant:84], [iv.heightAnchor constraintEqualToConstant:84]]];
-    CABasicAnimation* breathe = [CABasicAnimation animationWithKeyPath:@"transform.scale"];
-    breathe.fromValue = @1.0; breathe.toValue = @1.05; breathe.duration = 2.4; breathe.autoreverses = YES; breathe.repeatCount = HUGE_VALF;
-    breathe.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-    [iv.layer addAnimation:breathe forKey:@"breathe"];
-    [hero addArrangedSubview:disc];
-  } else {
-    [hero addArrangedSubview:[[MUHeroView alloc] initWithSize:120]];
+                                              [iv.widthAnchor constraintEqualToConstant:36], [iv.heightAnchor constraintEqualToConstant:36]]];
+    [identity addArrangedSubview:disc];
   }
   UILabel* title = [[UILabel alloc] init];
-  title.text = @"Dashdance"; title.font = meleeFont(52, UIFontWeightBlack); title.textColor = UIColor.whiteColor;
-  title.layer.shadowColor = kYellow().CGColor; title.layer.shadowOpacity = 0.5; title.layer.shadowRadius = 14; title.layer.shadowOffset = CGSizeZero;
-  UILabel* sub = [self label:@"SUPER SMASH BROS. MELEE  ·  SLIPPI ONLINE  ·  NATIVE" size:12 weight:UIFontWeightSemibold alpha:0.6];
+  title.text = @"Dashdance"; title.font = meleeFont(32, UIFontWeightBlack); title.textColor = UIColor.whiteColor;
+  title.adjustsFontSizeToFitWidth = YES; title.minimumScaleFactor = 0.75;
+  title.accessibilityTraits = UIAccessibilityTraitHeader;
+  UILabel* sub = [self label:@"Melee. Anywhere." size:14 weight:UIFontWeightMedium alpha:0.7];
+  UIStackView* wordmark = [[UIStackView alloc] initWithArrangedSubviews:@[title, sub]];
+  wordmark.axis = UILayoutConstraintAxisVertical; wordmark.spacing = 3;
+  [identity addArrangedSubview:wordmark];
+  [hero addArrangedSubview:identity];
   // The player badge: a yellow capsule with real padding. Long names shrink the text slightly, then truncate, and the
   // capsule never grows past the screen, so letters never run into its rounded ends.
   UIView* chipWrap = [[UIView alloc] init];
@@ -1055,11 +1062,14 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
                                             [self.playerChip.centerYAnchor constraintEqualToAnchor:chipWrap.centerYAnchor],
                                             [self.playerChip.leadingAnchor constraintEqualToAnchor:chipWrap.leadingAnchor constant:18], [self.playerChip.trailingAnchor constraintEqualToAnchor:chipWrap.trailingAnchor constant:-18]]];
   [chipWrap.widthAnchor constraintLessThanOrEqualToConstant:600].active = YES;
-  chipWrap.hidden = YES;
-  objc_setAssociatedObject(self.playerChip, "badge", chipWrap, OBJC_ASSOCIATION_ASSIGN);
-  [hero addArrangedSubview:title]; [hero addArrangedSubview:sub]; [hero addArrangedSubview:chipWrap];
+  UIView* spacer = [[UIView alloc] init];
+  [spacer setContentHuggingPriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+  UIStackView* badgeLine = [[UIStackView alloc] initWithArrangedSubviews:@[chipWrap, spacer]];
+  badgeLine.axis = UILayoutConstraintAxisHorizontal;
+  badgeLine.hidden = YES;
+  objc_setAssociatedObject(self.playerChip, "badge", badgeLine, OBJC_ASSOCIATION_ASSIGN);
+  [hero addArrangedSubview:badgeLine];
   [chipWrap.widthAnchor constraintLessThanOrEqualToAnchor:hero.widthAnchor].active = YES;   // a long name shrinks or truncates inside the capsule instead of widening it
-  [hero setCustomSpacing:14 afterView:sub];
   return hero;
 }
 - (UIView*)buildSteps {
@@ -1095,7 +1105,7 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
 - (UIView*)buildAccount {
   UIView* card = [self panel];
   UIStackView* s = [self stackIn:card];
-  [s addArrangedSubview:[self header:@"SLIPPI ONLINE ACCOUNT" symbol:@"person.crop.circle"]];
+  [s addArrangedSubview:[self header:@"SLIPPI ONLINE" symbol:@"person.crop.circle"]];
   self.accountLabel = [self label:@"" size:16 weight:UIFontWeightRegular alpha:1];
   [s addArrangedSubview:self.accountLabel];
   self.signInRows = [[UIStackView alloc] init]; self.signInRows.axis = UILayoutConstraintAxisVertical; self.signInRows.spacing = 10;
@@ -1105,7 +1115,7 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
   [self.signInButton addTarget:self action:@selector(signIn) forControlEvents:UIControlEventTouchUpInside];
   UIButton* reset = [UIButton buttonWithType:UIButtonTypeSystem];
   [reset setTitle:@"Forgot password · Create an account at slippi.gg" forState:UIControlStateNormal];
-  reset.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]; reset.tintColor = kYellow();
+  reset.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]; reset.titleLabel.numberOfLines = 0; reset.titleLabel.textAlignment = NSTextAlignmentCenter; reset.tintColor = kYellow();
   [reset addTarget:self action:@selector(forgotPassword) forControlEvents:UIControlEventTouchUpInside];
   for (UIView* v in @[self.emailField, self.passwordField, self.signInButton, reset]) [self.signInRows addArrangedSubview:v];
   [s addArrangedSubview:self.signInRows];
@@ -1120,7 +1130,7 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
   UIStackView* s = [self stackIn:card];
   [s addArrangedSubview:[self header:@"RANKED" symbol:@"trophy"]];
   UIStackView* top = [[UIStackView alloc] init]; top.axis = UILayoutConstraintAxisHorizontal; top.alignment = UIStackViewAlignmentFirstBaseline; top.spacing = 12;
-  self.rankLabel = [[UILabel alloc] init]; self.rankLabel.font = meleeFont(34, UIFontWeightBlack); self.rankLabel.textColor = kYellow();
+  self.rankLabel = [[UILabel alloc] init]; self.rankLabel.font = meleeFont(28, UIFontWeightBlack); self.rankLabel.numberOfLines = 0; self.rankLabel.textColor = kYellow();
   self.ratingLabel = [[UILabel alloc] init]; self.ratingLabel.font = [UIFont monospacedDigitSystemFontOfSize:22 weight:UIFontWeightSemibold]; self.ratingLabel.textColor = UIColor.whiteColor;
   UIView* spacer = [[UIView alloc] init]; [spacer setContentHuggingPriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
   [top addArrangedSubview:self.rankLabel]; [top addArrangedSubview:spacer]; [top addArrangedSubview:self.ratingLabel];
@@ -1169,7 +1179,7 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
 - (void)refreshReadiness {
   if (!self.readinessStack) return;
   const int delay = self.delayControl ? [self selectedDelay] : self.settings->online_delay;
-  const std::vector<host::ReadinessItem> items = host::competitive_readiness(display_max_hz(), false, delay);
+  const std::vector<host::ReadinessItem> items = host::competitive_readiness(display_max_hz(self.view), false, delay);
   std::string sig;
   for (const host::ReadinessItem& i : items) sig += (i.ok ? "1" : "0") + i.text + ";";
   if (sig == self.readinessSignature) return;
@@ -1188,19 +1198,35 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
     [self.readinessStack addArrangedSubview:row];
   }
 }
+- (void)selectResolutionScale:(int)scale {
+  self.resolutionScale = scale;
+  UIButtonConfiguration* config = self.scaleControl.configuration;
+  config.title = scale == 0 ? @"Auto" : [NSString stringWithFormat:@"%d×", scale];
+  self.scaleControl.configuration = config;
+  self.scaleControl.accessibilityLabel = @"Internal resolution";
+  self.scaleControl.accessibilityValue = config.title;
+  NSMutableArray<UIAction*>* choices = [NSMutableArray array];
+  __weak MULauncherController* weakSelf = self;
+  for (int value : {0, 1, 2, 3, 4, 6, 8}) {
+    NSString* title = value == 0 ? @"Auto" : [NSString stringWithFormat:@"%d×", value];
+    UIAction* action = [UIAction actionWithTitle:title image:nil identifier:nil handler:^(UIAction*) { [weakSelf selectResolutionScale:value]; }];
+    action.state = value == scale ? UIMenuElementStateOn : UIMenuElementStateOff;
+    [choices addObject:action];
+  }
+  self.scaleControl.menu = [UIMenu menuWithChildren:choices];
+}
 - (UIView*)buildDisplay {
   UIView* card = [self panel];
   UIStackView* s = [self stackIn:card];
   [s addArrangedSubview:[self header:@"DISPLAY & PERFORMANCE" symbol:@"speedometer"]];
   id<MTLDevice> gpu = MTLCreateSystemDefaultDevice();
-  NSString* info = [NSString stringWithFormat:@"%@  ·  %d Hz display  ·  thermal %s  ·  60 Hz simulation, frames shown on the next refresh", gpu ? gpu.name : @"Metal", display_max_hz(), host::thermal_state_name()];
-  UILabel* infoLabel = [self label:info size:13 weight:UIFontWeightRegular alpha:0.7];
-  [s addArrangedSubview:infoLabel];
-  const int scales[] = {0, 1, 2, 3, 4, 6, 8}; NSInteger scaleIndex = 0;
-  for (int i = 0; i < 7; ++i) if (scales[i] == self.settings->scale) scaleIndex = i;
-  self.scaleControl = [self segments:@[@"Auto", @"1×", @"2×", @"3×", @"4×", @"6×", @"8×"] selected:scaleIndex];
-  [s addArrangedSubview:[self label:@"Internal resolution" size:14 weight:UIFontWeightMedium alpha:0.8]];
-  [s addArrangedSubview:self.scaleControl];
+  self.displayDeviceName = gpu ? gpu.name : @"Metal";
+  self.displayInfoLabel = [self label:self.displayDeviceName size:13 weight:UIFontWeightRegular alpha:0.7];
+  [s addArrangedSubview:self.displayInfoLabel];
+  self.scaleControl = [self button:@"" symbol:@"chevron.up.chevron.down" prominent:NO];
+  self.scaleControl.showsMenuAsPrimaryAction = YES;
+  [self selectResolutionScale:self.settings->scale];
+  [s addArrangedSubview:[self row:@"Internal resolution" symbol:@"rectangle.inset.filled" control:self.scaleControl]];
   self.anisoControl = [self segments:@[@"Off", @"4×", @"16×"] selected:self.settings->anisotropy >= 16 ? 2 : self.settings->anisotropy >= 4 ? 1 : 0];
   [s addArrangedSubview:[self row:@"Anisotropic filtering" symbol:@"square.stack.3d.up" control:self.anisoControl]];
   self.upscalerControl = [self segments:@[@"Off", @"MetalFX", @"MetalFX+"] selected:MAX(0, MIN(2, self.settings->upscaler))];
@@ -1231,7 +1257,7 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
 - (UIView*)buildTouch {
   UIView* card = [self panel];
   UIStackView* s = [self stackIn:card];
-  [s addArrangedSubview:[self header:@"ON-SCREEN CONTROLS" symbol:@"hand.tap"]];
+  [s addArrangedSubview:[self header:@"TOUCH CONTROLS" symbol:@"hand.tap"]];
   self.overlaySlider = [[UISlider alloc] init]; self.overlaySlider.value = self.settings->overlay_opacity; self.overlaySlider.tintColor = kYellow();
   [s addArrangedSubview:[self sliderRow:@"Opacity" symbol:@"circle.lefthalf.filled" slider:self.overlaySlider format:@"%.0f%%" scale:100]];
   self.overlayScaleSlider = [[UISlider alloc] init]; self.overlayScaleSlider.minimumValue = 0.7; self.overlayScaleSlider.maximumValue = 1.4; self.overlayScaleSlider.value = self.settings->overlay_scale; self.overlayScaleSlider.tintColor = kYellow();
@@ -1321,22 +1347,22 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
   std::vector<host::GameRow> rows = self.dashboard.rows();
   self.gamesCard.hidden = rows.empty();
   for (const host::GameRow& r : rows) {
-    UIStackView* row = [[UIStackView alloc] init]; row.axis = UILayoutConstraintAxisHorizontal; row.spacing = 10; row.alignment = UIStackViewAlignmentCenter;
-    UIStackView* text = [[UIStackView alloc] init]; text.axis = UILayoutConstraintAxisVertical; text.spacing = 2;
+    UIStackView* row = [[UIStackView alloc] init]; row.axis = UILayoutConstraintAxisVertical; row.spacing = 4;
+    UIStackView* details = [[UIStackView alloc] init]; details.axis = UILayoutConstraintAxisHorizontal; details.spacing = 10; details.alignment = UIStackViewAlignmentFirstBaseline;
     // Long names wrap onto a second line instead of ending in "…": the labels may grow taller, never get cut.
     UILabel* title = [self label:ns(r.title) size:15 weight:UIFontWeightSemibold alpha:1];
     UILabel* subtitle = [self label:ns(r.subtitle) size:12 weight:UIFontWeightRegular alpha:0.6];
     for (UILabel* l in @[title, subtitle]) {
       l.lineBreakMode = NSLineBreakByWordWrapping;
       [l setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];
-      [text addArrangedSubview:l];
     }
-    [text setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+    [subtitle setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
     UILabel* result = [[UILabel alloc] init];
     result.text = ns(r.result); result.font = meleeFont(14, UIFontWeightBold); result.textAlignment = NSTextAlignmentCenter;
     result.textColor = r.win ? rgb(0.30, 0.85, 0.45) : r.loss ? kRed() : [UIColor colorWithWhite:1 alpha:0.6];
     [result setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
-    [row addArrangedSubview:text]; [row addArrangedSubview:result];
+    [details addArrangedSubview:subtitle]; [details addArrangedSubview:result];
+    [row addArrangedSubview:title]; [row addArrangedSubview:details];
     [self.gamesStack addArrangedSubview:row];
   }
 }
@@ -1516,14 +1542,13 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
 }
 - (void)applyCompetitivePreset {
   haptic_impact();
-  [self.scaleControl setSelectedSegmentIndex:2]; [self.anisoControl setSelectedSegmentIndex:2];   // 2x: the lowest-latency resolution that still looks crisp
+  [self selectResolutionScale:2]; [self.anisoControl setSelectedSegmentIndex:2];   // 2x: the lowest-latency resolution that still looks crisp
   [self.vsyncSwitch setOn:YES animated:YES]; [self.widescreenSwitch setOn:NO animated:YES];
   [self.sharpnessSlider setValue:0 animated:YES]; [self.sharpnessSlider sendActionsForControlEvents:UIControlEventValueChanged];
 }
 - (void)play {
   haptic_impact();
-  const int scales[] = {0, 1, 2, 3, 4, 6, 8};
-  self.settings->scale = scales[MAX(0, MIN(6, self.scaleControl.selectedSegmentIndex))];
+  self.settings->scale = self.resolutionScale;
   self.settings->anisotropy = self.anisoControl.selectedSegmentIndex == 2 ? 16 : self.anisoControl.selectedSegmentIndex == 1 ? 4 : 1;
   self.settings->upscaler = (int)MAX(0, MIN(2, self.upscalerControl.selectedSegmentIndex));
   self.settings->vsync = self.vsyncSwitch.on;
@@ -1555,17 +1580,14 @@ bool launcher_run(LauncherSettings& settings, const std::string& error) {
     if (!scene) std::fprintf(stderr, "launcher: no window scene connected after 10 s\n");
     UIWindow* window = nil;
     if (scene) window = [[UIWindow alloc] initWithWindowScene:scene];
-#if !TARGET_OS_VISION
-    if (!window) window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-#endif
     if (!window) return false;
-    settings.display_hz = display_max_hz();
     MULauncherController* controller = [[MULauncherController alloc] init];
     controller.settings = &settings;
     controller.startupError = error.empty() ? nil : [NSString stringWithUTF8String:error.c_str()];
     window.rootViewController = controller;
     window.windowLevel = UIWindowLevelNormal + 1;
     [window makeKeyAndVisible];
+    settings.display_hz = display_max_hz(controller.view);
     while (!controller.done) CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, true);
     [controller.controllerTimer invalidate];
     window.hidden = YES; window.rootViewController = nil;
