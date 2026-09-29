@@ -5,6 +5,8 @@ Details and evidence for each are in `docs/MAC_FIXES.md`.
 
 ## Fixes
 
+- Fix fresh installs failing at "Generating the port": setup.sh now checks doldecomp/melee out at the pinned
+  revision the recompiler requires, instead of whatever upstream master is at that day.
 - Read the GameCube adapter when macOS rejects timed reads on its interrupt pipe (it was never read at all on this Mac).
 - Quit with Cmd+Q from full screen.
 - Show the adapter's measured polling rate in the HUD instead of rounding anything under 900 Hz to "125 Hz".

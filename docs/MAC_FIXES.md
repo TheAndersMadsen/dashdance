@@ -24,6 +24,7 @@ A fix counts as confirmed once it has been played through again.
 
 | # | What was wrong | Fix | Commit |
 |---|---|---|---|
+| 9 | Fresh installs failed at "Generating the port": setup.sh cloned doldecomp/melee at upstream master, which has moved past the pinned revision bootstrap_port.py requires (issue #3, Tahoe 26.5.1). | setup.sh now checks the decomp checkout out at the pinned revision (fetch by commit, detach) and the pin error names the remedy: run ./setup.sh. | see git log |
 | 1 | GameCube adapter never read on this Mac: `ReadPipeTO` on the interrupt pipe returns `kIOReturnBadArgument`, so the reader thread gave up after 20 failures. | Fall back to blocking `ReadPipe` when timed reads are rejected; abort the pipe on close so the blocking read wakes. | see git log |
 | 2 | No way to quit from full screen except the Dock. | Cmd+Q requests exit from the SDL event loop. | see git log |
 | 3 | HUD showed any adapter rate below 900 Hz as "125 Hz" (the Mayflash overclocks to ~540 Hz). | Show the measured rate. | see git log |
