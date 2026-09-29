@@ -58,6 +58,10 @@ static MUStatusBar* g_status = nil;
 @implementation MULinks
 - (void)openGitHub:(id)sender { [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@"https://github.com/TheAndersMadsen/dashdance"]]; }
 - (void)openSlippiSite:(id)sender { [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@"https://slippi.gg"]]; }
+- (void)quit:(id)sender {
+  if (NSApp.modalWindow) [NSApp stopModalWithCode:NSModalResponseCancel];
+  else host::request_exit(0);
+}
 @end
 static MULinks* g_links = nil;
 
@@ -73,7 +77,8 @@ NSMenu* build_main_menu() {
   hideOthers.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
   [app addItemWithTitle:@"Show All" action:@selector(unhideAllApplications:) keyEquivalent:@""];
   [app addItem:[NSMenuItem separatorItem]];
-  [app addItemWithTitle:@"Quit Dashdance" action:@selector(terminate:) keyEquivalent:@"q"];
+  NSMenuItem* quit = [app addItemWithTitle:@"Quit Dashdance" action:@selector(quit:) keyEquivalent:@"q"];
+  quit.target = g_links;
   appItem.submenu = app;
   NSMenuItem* windowItem = [[NSMenuItem alloc] init]; [menubar addItem:windowItem];
   NSMenu* window = [[NSMenu alloc] initWithTitle:@"Window"];
@@ -1565,7 +1570,7 @@ static NSButton* pairing_button(NSString* title, NSString* sym, id target, SEL a
   }
   [menu addItem:[NSMenuItem separatorItem]];
   NSMenuItem* site = [[NSMenuItem alloc] initWithTitle:@"Slippi.gg" action:@selector(openSlippiSite:) keyEquivalent:@""]; site.target = g_links; [menu addItem:site];
-  NSMenuItem* quit = [[NSMenuItem alloc] initWithTitle:@"Quit Dashdance" action:@selector(terminate:) keyEquivalent:@"q"]; quit.target = NSApp; [menu addItem:quit];
+  NSMenuItem* quit = [[NSMenuItem alloc] initWithTitle:@"Quit Dashdance" action:@selector(quit:) keyEquivalent:@"q"]; quit.target = g_links; [menu addItem:quit];
   self.item.menu = menu;
 }
 - (void)playFromMenu:(id)sender { if (self.launcher) [self.launcher play]; }
