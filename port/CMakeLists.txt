@@ -556,7 +556,7 @@ if(MELEE_BUILD_PORT_METAL)
   # Aurora is only built here for its vendored SDL3.
   add_library(runtime_mac STATIC ${PORT_PORTABLE_RUNTIME_SOURCES} runtime/hle/slippi_text.cpp
     runtime/hle/slippi_http_apple.mm runtime/hle/slippi_login.cpp runtime/hle/slippi_history.cpp
-    runtime/host/window_sdl.cpp runtime/host/window_fold_apple.mm runtime/host/input_config.cpp runtime/host/dashboard.cpp runtime/host/audio_sdl.cpp runtime/host/haptics_apple.mm runtime/host/apple_power.mm runtime/host/controller_rate.mm runtime/host/game_menu.cpp runtime/host/notify_apple.mm runtime/hle/discord_rpc.cpp runtime/host/gc_diagram.cpp
+    runtime/host/window_sdl.cpp runtime/host/window_fold_apple.mm runtime/host/input_config.cpp runtime/host/dashboard.cpp runtime/host/audio_sdl.cpp runtime/host/haptics_apple.mm runtime/host/apple_power.mm runtime/host/controller_rate.mm runtime/host/lossless_xinput.cpp runtime/host/game_menu.cpp runtime/host/notify_apple.mm runtime/hle/discord_rpc.cpp runtime/host/gc_diagram.cpp
     ${PORT_GC_ADAPTER_SOURCE} ${PORT_APPLE_LAUNCHER_SOURCE}
     runtime/gx/gx_metal.mm runtime/gx/gx_msl.cpp)
   set_source_files_properties(runtime/gx/gx_metal.mm runtime/hle/slippi_http_apple.mm runtime/host/haptics_apple.mm runtime/host/apple_power.mm runtime/host/controller_rate.mm runtime/host/notify_apple.mm

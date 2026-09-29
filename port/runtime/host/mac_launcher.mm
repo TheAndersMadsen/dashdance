@@ -29,6 +29,7 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
   if (pad.is_gamecube_adapter) {
     std::string ports;
     for (int p = 0; p < 4; ++p) if (pad.adapter_ports & (1u << p)) ports += (ports.empty() ? "port " : ", ") + std::to_string(p + 1);
+    if (ports.empty() && pad.guid == "lossless-xinput") ports = "press a button to show the controller's port";   // XInput has no plugged-in flag
     if (pad.report_hz <= 0) std::snprintf(b, sizeof b, "USB · %s · measuring the polling rate…", ports.empty() ? "no controller plugged in" : ports.c_str());
     else if (pad.report_hz >= 900) std::snprintf(b, sizeof b, "USB · %s · polling at %.0f Hz (1 ms)", ports.empty() ? "no controller plugged in" : ports.c_str(), pad.report_hz);
     else std::snprintf(b, sizeof b, "USB · %s · polling at %.0f Hz; the host kept the adapter's default, try another USB port or hub", ports.empty() ? "no controller plugged in" : ports.c_str(), pad.report_hz);

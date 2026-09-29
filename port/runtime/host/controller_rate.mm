@@ -119,6 +119,7 @@ void hid_matched(void*, IOReturn, void*, IOHIDDeviceRef device) {
   if (hid_string(device, CFSTR(kIOHIDTransportKey)) != "USB") return;   // Bluetooth pads only report on change; the framework path measures those
   const std::string product = hid_string(device, CFSTR(kIOHIDProductKey));
   if (product.empty()) return;
+  if (product.find("Lossless") != std::string::npos) return;   // read and counted natively by lossless_xinput.cpp
   if (IOHIDDeviceOpen(device, kIOHIDOptionsTypeNone) != kIOReturnSuccess) return;   // shared open: the system driver and SDL keep the device
   HidDevice* d = new HidDevice; d->product = product;
   {

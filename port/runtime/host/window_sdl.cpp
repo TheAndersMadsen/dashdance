@@ -65,6 +65,22 @@ std::string gamepad_guid(SDL_Gamepad* pad) {
   SDL_GUIDToString(SDL_GetGamepadGUIDForID(SDL_GetGamepadID(pad)), buf, sizeof buf);
   return buf;
 }
+// The Lossless Adapter in XInput mode is read natively (lossless_xinput.cpp); the gamepad SDL builds from the
+// framework's view of it (one dead interface, named by category "Xbox One Wireless Controller") must not feed a
+// port or appear in the lists. Nothing else identifies that gamepad, so it is the 045E:02E0 one while the
+// framework also reports a "Lossless adapter" controller.
+bool lossless_owns_gamepad(SDL_Gamepad* pad) {
+  if (SDL_GetGamepadVendor(pad) != 0x045E || SDL_GetGamepadProduct(pad) != 0x02E0) return false;
+  GcAdapterStatus status;
+  if (!lossless_status(status)) return false;
+  static double checked = 0.0; static bool present = false;
+  const double now = now_seconds();
+  if (now - checked > 1.0) {
+    checked = now; present = false;
+    for (const ControllerReport& r : controller_reports()) if (r.name.find("Lossless") != std::string::npos) present = true;
+  }
+  return present;
+}
 SDL_JoystickID g_gamepad_port[4] = {0, 0, 0, 0};   // GameCube port -> gamepad instance id (set by input_poll; 0 = none)
 InputScript g_script;
 bool g_scripted = false;
@@ -586,6 +602,12 @@ std::vector<ControllerInfo> window_list_controllers() {
     info.adapter_ports = adapter.ports; info.adapter_interval_ms = adapter.interval_ms; info.report_hz = adapter.report_hz;
     list.push_back(info);
   }
+  if (lossless_status(adapter)) {
+    ControllerInfo info;
+    info.name = "Lossless Adapter (XInput mode)"; info.guid = "lossless-xinput"; info.is_gamecube_adapter = true; info.wired = true;
+    info.adapter_ports = adapter.ports; info.adapter_interval_ms = adapter.interval_ms; info.report_hz = adapter.report_hz; info.rate_counted = true;
+    list.push_back(info);
+  }
   const std::vector<ControllerReport> reports = controller_reports();
   SDL_PumpEvents();
   SDL_Event event;
@@ -612,6 +634,7 @@ std::vector<ControllerInfo> window_list_controllers() {
   }
   for (size_t i = 0; i < g_gamepads.size(); ++i) {
     SDL_Gamepad* pad = g_gamepads[i];
+    if (lossless_owns_gamepad(pad)) continue;
     ControllerInfo info;
     info.name = SDL_GetGamepadName(pad) ? SDL_GetGamepadName(pad) : "Controller";
     info.guid = gamepad_guid(pad);
@@ -711,7 +734,7 @@ void input_poll(PadState out[4]) {
     }
     return;
   }
-  const uint32_t adapter_mask = gcadapter_poll(out);
+  const uint32_t adapter_mask = gcadapter_poll(out) | lossless_poll(out);   // WUP-028 protocol, or the Lossless Adapter's XInput mode
   ui.gamecube = (adapter_mask & 1u) != 0;
   // Gamepads fill ports in connection order after the adapter's; the keyboard adds to port 1.
   for (int i = 0; i < 4; ++i) g_gamepad_port[i] = 0;
@@ -719,6 +742,7 @@ void input_poll(PadState out[4]) {
   bool taken[4] = {(adapter_mask & 1u) != 0, (adapter_mask & 2u) != 0, (adapter_mask & 4u) != 0, (adapter_mask & 8u) != 0};
   std::vector<SDL_Gamepad*> floating;
   for (SDL_Gamepad* pad : g_gamepads) {
+    if (lossless_owns_gamepad(pad)) continue;
     const ControllerConfig* cfg = controller_config_for(gamepad_guid(pad));
     const int fixed = cfg ? cfg->port : 0;
     if (fixed >= 1 && fixed <= 4 && !taken[fixed - 1]) { taken[fixed - 1] = true; read_gamepad(pad, out[fixed - 1]); g_gamepad_port[fixed - 1] = SDL_GetGamepadID(pad); }

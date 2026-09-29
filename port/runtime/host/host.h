@@ -162,6 +162,10 @@ bool gcadapter_status(GcAdapterStatus& out);   // false when no adapter is open
 void gcadapter_rumble(int port, bool on);
 // PADRecalibrate support: re-capture the adapter's stick/trigger neutrals (-1 = every port).
 void gcadapter_recalibrate(int port);
+// Input Integrity Lossless Adapter in PC (XInput) mode, read natively on macOS (lossless_xinput.cpp): fills
+// ports with a controller and returns their mask; status false when the adapter is absent or in another mode.
+uint32_t lossless_poll(PadState out[4]);
+bool lossless_status(GcAdapterStatus& out);
 // Rumble routed by game port (the controller that feeds that port, fallback included) or by
 // local player: during an online match the game's ports are match slots, not sockets.
 void input_rumble(int game_port, bool on);

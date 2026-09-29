@@ -31,6 +31,9 @@ Details and evidence for each are in `docs/MAC_FIXES.md`.
   shows "USB · GameCube controller · polling at 1000 Hz" as soon as it is plugged in. On the Mac, USB controllers'
   report rates are counted from their HID report stream instead of waiting for a stick to move, and they count as wired
   (docs/MAC_FIXES.md fix 15). Both dashboards log the controller rows they show.
+- Lossless Adapter in PC (XInput) mode is read natively on the Mac: all four of its Xbox 360 interfaces through IOKit HID,
+  interface N as GameCube port N+1, at 1000 Hz; before, only the framework's single (idle) controller reached SDL and the
+  pad did nothing in game (docs/MAC_FIXES.md fix 17).
 - Fix the crash when a controller connects after launch (GameController's "Recursive or concurrent mutation detected"
   assertion): the report-rate change handlers are installed after the connect notification, on the main queue (docs/MAC_FIXES.md fix 16).
 - The dashboards' controller card is logged (`dashboard: controller row: ...`) so a session log shows what the player saw.
