@@ -5,6 +5,8 @@ Details and evidence for each are in `docs/MAC_FIXES.md`.
 
 ## Fixes
 
+- Keep the game visible on M1 Pro when 8x internal resolution overwhelms Metal: present periodically and warn
+  when rendering falls behind, without silently changing the selected resolution.
 - Make the in-game Volume setting actually scale Slippi jukebox music: only 0% muted it before, every other
   level played at full volume.
 - Fix fresh installs failing at "Generating the port": setup.sh now checks doldecomp/melee out at the pinned
