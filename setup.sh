@@ -62,6 +62,13 @@ if [[ ! -d "$DECOMP/src" ]]; then
   mkdir -p "$ROOT/deps"
   git clone --depth 1 https://github.com/doldecomp/melee.git "$DECOMP"
 fi
+# The port translates the pinned decomp revision; a fresh clone tracks upstream master, which has moved on.
+DECOMP_PIN="$(python3 -c "import json; print(json.load(open('$ROOT/tools/port_source_pins.json'))['decomp']['commit'])")"
+if [[ "$(git -C "$DECOMP" rev-parse HEAD)" != "$DECOMP_PIN" ]]; then
+  step "doldecomp/melee at the pinned revision $DECOMP_PIN"
+  git -C "$DECOMP" fetch --depth 1 origin "$DECOMP_PIN"
+  git -C "$DECOMP" checkout --detach --quiet FETCH_HEAD
+fi
 
 step "main.dol from your disc"
 mkdir -p "$ROOT/deps/disc"

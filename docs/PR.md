@@ -5,6 +5,10 @@ Details and evidence for each are in `docs/MAC_FIXES.md`.
 
 ## Fixes
 
+- Make the in-game Volume setting actually scale Slippi jukebox music: only 0% muted it before, every other
+  level played at full volume.
+- Fix fresh installs failing at "Generating the port": setup.sh now checks doldecomp/melee out at the pinned
+  revision the recompiler requires, instead of whatever upstream master is at that day.
 - Read the GameCube adapter when macOS rejects timed reads on its interrupt pipe (it was never read at all on this Mac).
 - Quit with Cmd+Q from full screen.
 - Show the adapter's measured polling rate in the HUD instead of rounding anything under 900 Hz to "125 Hz".
@@ -46,6 +50,12 @@ All in `tools/mac/`, written up for agents in the `fix-logs` skill (`desync.md`,
 - `ramdiff.py`: compares Dashdance's and Dolphin's memory field by field (fighters, animation).
 - `crashram.py`: shows what a crash's broken object is and what points at it.
 - `slp.py`: small replay reader the others share.
+
+- Add project-local iPhone Duo skills, shared references and a UIKit/Metal workflow with explicit simulator verification requirements.
+
+- Correct Retina scaling and camera-region edge projection so Duo touch controls use the actual safe area.
+
+- Redesign the iOS dashboard around immediate Play access, safe-area/fold-aware columns, readable settings and compact Melee branding.
 
 ## Before opening
 

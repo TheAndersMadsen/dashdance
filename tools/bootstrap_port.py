@@ -74,7 +74,8 @@ def main():
     if relative_build == Path("."):
         parser.error("use a named child of build/, not the shared build directory itself")
     if git_head(decomp) != PINS["decomp"]["commit"]:
-        parser.error("--decomp-root HEAD must equal pinned revision " + PINS["decomp"]["commit"])
+        parser.error("--decomp-root HEAD must equal pinned revision " + PINS["decomp"]["commit"]
+                     + " (run ./setup.sh, which checks out the pinned revision)")
     for relative, expected in PINS["decomp"]["files_sha256"].items():
         path = decomp / relative
         if not path.is_file() or sha(path) != expected:
