@@ -111,10 +111,28 @@ committed; the disc stays where it is.
   contains "any later version" as template text). MIT and zlib notices not already in the tree go in that file. Never
   commit code or headers under proprietary terms.
 - Online input delay is a player setting (`online_delay`, 1..9, default 2), exposed on both dashboards and the in-game menu; never hardcode it. On iPhone/iPad `power_play_begin` holds the display at full refresh and requests a 5 ms audio buffer (`apple_power.mm`); `latency_warning()` feeds the HUD. `competitive_readiness()` (apple_power.mm) feeds the Ready to compete card on both dashboards and the `readiness:` log lines; keep its wording player-facing. Rollback save states are timed as the `savestate` cost slot. The phase lock stays off: measured as noise.
-- iPhone Duo (see docs/TECHNICAL.md): one game rectangle (`host::window_game_rect`) for renderer, touch layout and letterbox artwork; upright, the game never passes the middle of the display (the fold); controls and overlay text are sized in points; dashboard columns switch on size class and centre on the display; no global main screen; `UIRequiresFullScreen` stays off. The README is written for players; put technical material in docs/TECHNICAL.md.
+- iPhone Duo (see docs/TECHNICAL.md): one game rectangle (`host::window_game_rect`) for renderer, touch layout and letterbox artwork; upright, the game never passes the middle of the display (the fold); controls and overlay text are sized in points; dashboard columns switch on size class and available safe width, with the gap aligned to an active fold region; no global main screen; `UIRequiresFullScreen` stays off. The README is written for players; put technical material in docs/TECHNICAL.md.
 - Every screen adapts: two columns of cards when the window is wide (Mac from 1100 pt, iPad and Vision Pro from 960 pt), a side-by-side controller editor in landscape, and touch controls, HUD and menu inside the safe area. Check portrait and landscape on iPhone and iPad and a narrow and wide window on Mac and Vision Pro with the aids above.
 
 ## Verification checklist for a change
+
+### iPhone Duo skills
+
+For iPhone Duo implementation, testing or review, read
+[iphone-duo-readiness](.agents/skills/iphone-duo-readiness/SKILL.md) first and use
+[the project workflow](docs/IPHONE_DUO.md). For the Metal game, touch controls, HUD or viewport, also read
+[iphone-duo-games](.agents/skills/iphone-duo-games/SKILL.md) and
+[iphone-duo-adaptive-layout](.agents/skills/iphone-duo-adaptive-layout/SKILL.md).
+For the UIKit dashboard, controller editor or other visible UI, also read
+[iphone-duo-design-review](.agents/skills/iphone-duo-design-review/SKILL.md).
+Load the other installed Duo skills when the workflow's routing table applies.
+
+Check API spellings, coordinate spaces and availability against the installed SDK before implementing examples;
+the imported skills are guidance, not proof that a layout works. Preserve Melee's gameplay and chosen aspect ratio,
+the shared game rectangle, point-sized controls and nonblocking simulation thread. Record actual simulator evidence
+for each tested display/pose and mark untested cases explicitly. Do not claim Duo readiness from a successful build alone.
+
+### Checks
 
 1. Build the target you touched (macOS at least; iOS if you touched shared UI or Metal).
 2. Run a scripted match and confirm `late` frames stay at zero (see the scripts described in
