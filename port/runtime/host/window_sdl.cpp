@@ -841,6 +841,15 @@ void window_destroy() {
   if (g_window) { SDL_DestroyWindow(g_window); g_window = nullptr; }
 }
 void window_set_title(const wchar_t* title) { if (g_window) SDL_SetWindowTitle(g_window, narrow(title).c_str()); }
+void window_set_visible(bool visible) {
+  if (!g_window) return;
+#if defined(__APPLE__) && TARGET_OS_VISION
+  // UIKit window visibility is main-thread-only, and AR Mode calls this from the game thread.
+  dispatch_sync(dispatch_get_main_queue(), ^{ visible ? SDL_ShowWindow(g_window) : SDL_HideWindow(g_window); });
+#else
+  if (visible) SDL_ShowWindow(g_window); else SDL_HideWindow(g_window);
+#endif
+}
 bool window_closed() { return g_closed.load(); }
 void window_client_size(int* w, int* h) { if (w) *w = g_client_w; if (h) *h = g_client_h; }
 

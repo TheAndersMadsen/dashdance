@@ -33,6 +33,9 @@ struct MetalOptions {
 Backend* create_metal_backend(void* layer, int w, int h, const MetalOptions& options);
 void metal_resize(Backend* backend, int w, int h);
 void metal_set_options(Backend* backend, const MetalOptions& options);
+// AR Mode (visionOS): stop presenting to the flat window (hidden while the immersive space is
+// open) without touching the mirror — the quad is the primary display then.
+void metal_set_skip_present(Backend* backend, bool skip);
 // AR Mode (visionOS): copy of the published mirror for the immersive quad; false when the
 // backend is not running with MetalOptions::ar_mirror.
 bool metal_ar_snapshot(DashdanceArFrame* out);

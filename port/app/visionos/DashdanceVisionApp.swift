@@ -11,17 +11,20 @@ import CompositorServices
 import _CompositorServices_SwiftUI
 
 // Shared flags between the C++ game flow and SwiftUI. `phase` moves idle → dashboard when the
-// game thread has a launcher controller to host; `wantOpen` requests the immersive space.
+// game thread has a launcher controller to host; `wantOpen` requests the immersive space; when
+// the space closes, `reopenMain` brings the main window back.
 final class SpaceBridge: ObservableObject {
     enum Phase { case idle, dashboard }
     static let shared = SpaceBridge()
     @Published var phase: Phase = .idle
     @Published var wantOpen = false
+    @Published var reopenMain = false
     private let lock = NSLock()
     private var opened = false
 
     func setOpened(_ value: Bool) {
-        lock.lock(); opened = value; lock.unlock()
+        lock.lock(); let was = opened; opened = value; lock.unlock()
+        if was && !value { DispatchQueue.main.async { SpaceBridge.shared.reopenMain = true } }
     }
     func isOpen() -> Bool {
         lock.lock(); defer { lock.unlock() }; return opened
@@ -50,6 +53,8 @@ struct DashboardHost: UIViewControllerRepresentable {
 
 struct RootView: View {
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
+    @Environment(\.dismissWindow) private var dismissWindow
+    @Environment(\.openWindow) private var openWindow
     @ObservedObject var bridge = SpaceBridge.shared
 
     var body: some View {
@@ -58,7 +63,10 @@ struct RootView: View {
                 DashboardHost()
                     .ignoresSafeArea()
             } else {
-                Color.black.ignoresSafeArea()
+                // Clear, not black: in AR Mode the SwiftUI window would otherwise draw a pane
+                // over the room in front of the quad — and while the space is open the window is
+                // dismissed entirely (see onChange below), leaving the room as the display.
+                Color.clear.ignoresSafeArea()
             }
         }
         .onChange(of: bridge.wantOpen) { _, want in
@@ -69,6 +77,9 @@ struct RootView: View {
                 case .opened:
                     NSLog("ar mode: immersive space opened")
                     SpaceBridge.shared.setOpened(true)
+                    // The room is the display now: the window's glass would sit in front of the
+                    // quad. Reopened when the space closes.
+                    dismissWindow(id: "main")
                 case .error, .userCancelled:
                     fallthrough
                 @unknown default:
@@ -76,6 +87,11 @@ struct RootView: View {
                     SpaceBridge.shared.setOpened(false)
                 }
             }
+        }
+        .onChange(of: bridge.reopenMain) { _, reopen in
+            guard reopen else { return }
+            bridge.reopenMain = false
+            openWindow(id: "main")
         }
         .onAppear {
             // The game flow runs on its own thread from here; the main thread stays with SwiftUI.
@@ -88,9 +104,11 @@ struct RootView: View {
 }
 
 // Entry point: the Swift runtime links us as a static library, where @main does not synthesize
-// the C entry, so provide it and run the SwiftUI app from there (it never returns).
+// the C entry, so provide it: store the launch arguments for the game flow, then run the SwiftUI
+// app (it never returns).
 @_cdecl("main")
-func dashdanceSwiftMain() -> Int32 {
+func dashdanceSwiftMain(_ argc: Int32, _ argv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?) -> Int32 {
+    dashdance_vision_store_args(argc, argv)
     DashdanceVisionApp.main()
     return 0
 }
@@ -102,7 +120,7 @@ struct DashdanceVisionApp: App {
     }
 
     var body: some Scene {
-        WindowGroup { RootView() }
+        WindowGroup(id: "main") { RootView() }
         // No style modifiers here: a CompositorLayer space configures its own immersion
         // (Apple's guidance), and a mixed passthrough comes from the layer's alpha.
         ImmersiveSpace(id: ARScreenRenderer.spaceID) {

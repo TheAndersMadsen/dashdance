@@ -32,6 +32,9 @@ bool window_take_fullscreen_toggle();   // true once per Alt+Enter press in the 
 double window_refresh_rate();
 void window_destroy();
 void window_set_title(const wchar_t* title);
+// AR Mode (visionOS): hide the flat window while the immersive space is open (the quad is the
+// display then); show it again if the space closes.
+void window_set_visible(bool visible);
 bool window_closed();
 void window_client_size(int* w, int* h);
 // Scripted input: text file with lines "FRAME BUTTON+BUTTON [sx=N] [sy=N] [cx=N] [cy=N]"; state holds

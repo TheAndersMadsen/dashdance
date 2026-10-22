@@ -63,9 +63,11 @@ final class ARScreenRenderer {
     private var placedThisSession = false
     private var placementDirty = false
 
-    // Pinch gestures: the system delivers look+pinch as spatial events; we project the pointing
-    // hand onto the screen's plane and drag/twist/scale from there.
-    private struct Touch { var point: SIMD3<Float> }
+    // Pinch gestures: the system delivers look+pinch as spatial events. A pinch that lands on the
+    // picture plays — it becomes a finger on the quad's touch surface (buttons, sticks, the menu)
+    // — and a pinch that lands off it moves, turns and scales the screen, exactly like xelee's
+    // grab: one hand drags, two hands twist and spread.
+    private struct Touch { var point: SIMD3<Float>; var play = false }
     private var touches: [SpatialEventCollection.Event.ID: Touch] = [:]
     private var grabStart: (distance: Float, angle: Float, width: Float, yaw: Float)?
     private struct EventIn { let id: SpatialEventCollection.Event.ID; let active: Bool; let point: SIMD3<Float> }
@@ -329,6 +331,14 @@ final class ARScreenRenderer {
         return point + n * simd_dot(center - point, n)
     }
 
+    // The hit point in the screen's local metres: x across (±width/2), y up (±picture height/2).
+    private func projectOnQuad(_ point: SIMD3<Float>) -> SIMD3<Float>? {
+        let hit = projectOnPlane(point)
+        let local = hit - center
+        let c = cos(yaw), s = sin(yaw)
+        return SIMD3<Float>(local.x * c - local.z * s, local.y, 0)
+    }
+
     // Restore the anchored spot, or start in front of where the head is (AR Mode's default).
     private func placeOrRestore() async {
         var anchors: [WorldAnchor]?
@@ -358,7 +368,7 @@ final class ARScreenRenderer {
         let flat = SIMD3<Float>(forward.x, 0, forward.z)
         let dir = simd_length(flat) > 1e-4 ? simd_normalize(flat) : SIMD3<Float>(0, 0, -1)
         let head = SIMD3<Float>(devicePose.columns.3.x, devicePose.columns.3.y, devicePose.columns.3.z)
-        center = head + dir * 0.85 + SIMD3<Float>(0, -0.25, 0)
+        center = head + dir * 0.85 + SIMD3<Float>(0, -0.05, 0)
         yaw = atan2(-dir.x, -dir.z)
         width = 0.7
     }
@@ -393,27 +403,55 @@ final class ARScreenRenderer {
         for event in batch {
             if event.active {
                 let hit = projectOnPlane(event.point)
+                let local = projectOnQuad(event.point)   // metres from the centre in the screen's plane
                 if touches[event.id] == nil {
-                    touches[event.id] = Touch(point: hit)
-                    if touches.count == 2 { startTwoHandGrab() }
+                    let pictureHeight = width / max(aspect, 0.01)
+                    let onPicture = local.map { abs($0.x) <= width * 0.55 && abs($0.y) <= pictureHeight * 0.55 } ?? false
+                    if onPicture, let local {
+                        touches[event.id] = Touch(point: hit, play: true)
+                        dashdance_ar_touch(finger(of: event.id), 0, local.x / width + 0.5, 0.5 - local.y / pictureHeight)
+                    } else {
+                        touches[event.id] = Touch(point: hit)
+                        if placementCount() == 2 { startTwoHandGrab() }
+                    }
                 } else {
                     let previous = touches[event.id]!.point
                     touches[event.id]?.point = hit
-                    if touches.count == 1 {
+                    if touches[event.id]!.play {
+                        if let local {
+                            dashdance_ar_touch(finger(of: event.id), 1, local.x / width + 0.5, 0.5 - local.y / pictureHeight())
+                        }
+                    } else if placementCount() == 1 {
                         move(by: hit - previous)
                     } else {
                         updateTwoHandGrab()
                     }
                 }
             } else {
+                if touches[event.id]?.play == true {
+                    dashdance_ar_touch(finger(of: event.id), 2, 0, 0)
+                }
                 touches[event.id] = nil
-                if touches.count < 2 { grabStart = nil }
-                if touches.isEmpty && placementDirty {
+                if placementCount() < 2 { grabStart = nil }
+                if placementCount() == 0 && placementDirty {
                     persistPlacement()
                     placementDirty = false
                 }
             }
         }
+    }
+
+    private func placementCount() -> Int {
+        touches.values.filter { !$0.play }.count
+    }
+
+    // A stable id per spatial event, for the quad's touch surface.
+    private func finger(of id: SpatialEventCollection.Event.ID) -> Int64 {
+        Int64(bitPattern: UInt64(bitPattern: Int64(id.hashValue)))
+    }
+
+    private func pictureHeight() -> Float {
+        width / max(aspect, 0.01)
     }
 
     private func move(by delta: SIMD3<Float>) {
@@ -430,14 +468,14 @@ final class ARScreenRenderer {
     }
 
     private func startTwoHandGrab() {
-        let points = touches.values.map(\.point)
+        let points = touches.values.filter { !$0.play }.map(\.point)
         guard points.count == 2 else { return }
         grabStart = (simd_distance(points[0], points[1]), angleXZ(points[0], points[1]), width, yaw)
     }
 
     private func updateTwoHandGrab() {
         guard let start = grabStart else { return }
-        let points = touches.values.map(\.point)
+        let points = touches.values.filter { !$0.play }.map(\.point)
         guard points.count == 2 else { return }
         let distance = simd_distance(points[0], points[1])
         if start.distance > 1e-4 {

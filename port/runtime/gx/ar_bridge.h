@@ -33,7 +33,9 @@ int dashdance_ar_snapshot(DashdanceArFrame* out);
 void dashdance_vision_set_space_hooks(void (*request_open)(void), int (*is_open)(void));
 void dashdance_vision_request_space(void);
 int dashdance_vision_space_opened(void);
-// The whole launcher + game flow on the calling thread (the main thread), then exit()s.
+// SwiftUI's C entry stores the process's real argc/argv (simctl launch arguments, --iso,
+// --script, ...), runs the app, and RootView starts the game flow with those arguments.
+void dashdance_vision_store_args(int argc, char** argv);
 void dashdance_vision_main(void);
 // AR Mode: the game thread asks Swift to host the dashboard, then hands the controller over.
 void dashdance_vision_set_dashboard_hook(void (*show)(void));

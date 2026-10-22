@@ -16,6 +16,7 @@ bool window_take_fullscreen_toggle() { return false; }
 double window_refresh_rate() { return 60.0; }
 void window_destroy() {}
 void window_set_title(const wchar_t*) {}
+void window_set_visible(bool) {}
 bool window_closed() { return false; }
 void window_client_size(int* w, int* h) { if (w) *w = 0; if (h) *h = 0; }
 }  // namespace host

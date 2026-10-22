@@ -1529,6 +1529,7 @@ class MetalThreaded final : public Backend {
   void resize(int w, int h) { std::lock_guard<std::mutex> lock(pending_mutex_); pending_w_ = w; pending_h_ = h; pending_resize_ = true; }
   void set_options(const MetalOptions& o) { std::lock_guard<std::mutex> lock(pending_mutex_); pending_options_ = o; pending_options_set_ = true; }
   void set_overlay(OverlayProvider p) { std::lock_guard<std::mutex> lock(pending_mutex_); pending_overlay_ = std::move(p); pending_overlay_set_ = true; }
+  void set_skip_present(bool skip) { std::lock_guard<std::mutex> lock(pending_mutex_); pending_skip_ = skip; pending_skip_set_ = true; }
   uint64_t frames_presented() const { return frames_presented_.load(); }
 
  private:
@@ -1537,6 +1538,7 @@ class MetalThreaded final : public Backend {
     if (pending_resize_) { inner_->resize(pending_w_, pending_h_); pending_resize_ = false; }
     if (pending_options_set_) { inner_->set_options(pending_options_); pending_options_set_ = false; }
     if (pending_overlay_set_) { inner_->set_overlay(std::move(pending_overlay_)); pending_overlay_set_ = false; }
+    if (pending_skip_set_) { inner_->set_skip_present(pending_skip_); pending_skip_set_ = false; }
   }
   void run() {
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
@@ -1595,7 +1597,8 @@ class MetalThreaded final : public Backend {
   std::thread worker_;
   std::atomic<uint64_t> frames_presented_{0};
   std::mutex pending_mutex_;
-  bool pending_resize_ = false, pending_options_set_ = false, pending_overlay_set_ = false;
+  bool pending_resize_ = false, pending_options_set_ = false, pending_overlay_set_ = false, pending_skip_set_ = false;
+  bool pending_skip_ = false;
   int pending_w_ = 0, pending_h_ = 0;
   MetalOptions pending_options_;
   OverlayProvider pending_overlay_;
@@ -1623,6 +1626,7 @@ Backend* create_metal_backend(void* layer, int w, int h, const MetalOptions& opt
 }
 void metal_scale_caps(int device_cap, int thermal_cap) { g_device_scale_cap.store(std::max(0, device_cap)); g_thermal_scale_cap.store(std::max(0, thermal_cap)); }
 void metal_resize(Backend* backend, int w, int h) { if (MetalThreaded* t = threaded(backend)) t->resize(w, h); else static_cast<MetalBackend*>(backend)->resize(w, h); }
+void metal_set_skip_present(Backend* backend, bool skip) { if (MetalThreaded* t = threaded(backend)) t->set_skip_present(skip); else static_cast<MetalBackend*>(backend)->set_skip_present(skip); }
 void metal_set_options(Backend* backend, const MetalOptions& options) { if (MetalThreaded* t = threaded(backend)) t->set_options(options); else static_cast<MetalBackend*>(backend)->set_options(options); }
 uint64_t metal_frames_presented(Backend* backend) { if (MetalThreaded* t = threaded(backend)) return t->frames_presented(); return static_cast<MetalBackend*>(backend)->frames_presented(); }
 void metal_set_overlay(Backend* backend, OverlayProvider provider) { if (MetalThreaded* t = threaded(backend)) t->set_overlay(std::move(provider)); else static_cast<MetalBackend*>(backend)->set_overlay(std::move(provider)); }

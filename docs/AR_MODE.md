@@ -253,6 +253,9 @@ the HIG for immersive experiences) and the compositor documentation of both plat
 
 ## 3. Dashdance's AR Mode
 
+![AR Mode on Apple Vision Pro: Melee's Online Play menu floating in the room, with the game's
+touch controls drawn around the picture](screenshots/AR_MODE_VISIONOS.jpg)
+
 ### 3.1 What it is
 
 An alternative presentation mode on visionOS: after Play, the app opens a mixed-style immersive

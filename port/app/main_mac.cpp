@@ -374,13 +374,15 @@ int dashdance_main(int argc, char** argv) {
   ar_mode = ar_mode || settings.ar_mode;
   gfx.ar_mirror = ar_mode;   // only consumed by the Vision Pro immersive renderer
 #if TARGET_OS_VISION
+  bool ar_space_open = false;
   if (ar_mode) {
     // AR Mode: open the mixed-style immersive space now (SwiftUI shows its confirmation on
     // the free main thread), then start the game on this thread.
     dashdance_vision_request_space();
     const double deadline = host::now_seconds() + 20.0;
     while (!dashdance_vision_space_opened() && host::now_seconds() < deadline) usleep(50 * 1000);
-    host::log("ar mode: immersive space %s", dashdance_vision_space_opened() ? "open" : "did not open; continuing on the flat window");
+    ar_space_open = dashdance_vision_space_opened();
+    host::log("ar mode: immersive space %s", ar_space_open ? "open" : "did not open; continuing on the flat window");
   }
 #endif
   // Command-line flags win over remembered launcher values.
@@ -466,6 +468,16 @@ int dashdance_main(int argc, char** argv) {
 #endif
     gfx.cache_dir = cache_dir;
     backend = gx::create_metal_backend(layer, client_w, client_h, gfx);
+#if TARGET_OS_VISION
+    if (ar_space_open) {
+      // The quad is the display now: the flat window would only float a frozen picture in front
+      // of it. Hide it and let the render thread drain the flat present; the mirror keeps
+      // running (it renders regardless of the flat present).
+      host::window_set_visible(false);
+      gx::metal_set_skip_present(backend, true);
+      host::log("ar mode: the flat window steps aside; the room is the display");
+    }
+#endif
     host::log("display: %.0f Hz refresh; the game simulates at 60 Hz and each frame is shown on the next refresh slot", host::window_refresh_rate());
     host::window_input_init();   // already done when the launcher ran; with --iso the controllers must be open before readiness looks
     for (const host::ReadinessItem& item : host::competitive_readiness((int)host::window_refresh_rate(), settings.fullscreen || fullscreen_arg, online.delay))
@@ -566,14 +578,15 @@ int dashdance_main(int argc, char** argv) {
 }
 
 #if TARGET_OS_VISION
-// SwiftUI calls this (off the main thread is fine): the whole flow — dashboard, then game —
-// runs on its own thread (UIKit windows it creates are marshalled to the main thread), and the
-// process exits when the game exits, as in the plain-main builds on macOS and iOS.
+// SwiftUI's C entry stores the launch arguments, then runs the app (which never returns). The
+// game flow starts later from RootView, on its own thread, with the stored arguments — so
+// simctl launch arguments (--iso, --script, ...) work as they do on the other platforms.
+static int g_ar_argc = 1;
+static char** g_ar_argv = nullptr;
+void dashdance_vision_store_args(int argc, char** argv) { g_ar_argc = argc; g_ar_argv = argv; }
 void dashdance_vision_main(void) {
   std::thread([] {
-    static char arg0[] = "Dashdance";
-    char* argv[] = {arg0};
-    std::exit(dashdance_main(1, argv));
+    std::exit(dashdance_main(g_ar_argc, g_ar_argv));
   }).detach();
 }
 #else
