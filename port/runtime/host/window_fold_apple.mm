@@ -12,6 +12,7 @@
 // currently active — the curved centre band of the inner display while partially
 // folded. The frame already includes UIKit's margins for interactive content.
 bool window_fold_division_apple(void* uiwindow, float pixels_per_point, float* out) {
+#if !TARGET_OS_VISION   // UIViewReservedRegion is an iPhone Duo API; the visionOS SDK does not declare it
   if (@available(iOS 27.1, *)) {
     UIWindow* window = (__bridge UIWindow*)uiwindow;
     if (!window) return false;
@@ -29,6 +30,7 @@ bool window_fold_division_apple(void* uiwindow, float pixels_per_point, float* o
       return true;
     }
   }
+#endif
   return false;
 }
 #else
@@ -79,6 +81,7 @@ bool window_sync_apple(void* uiwindow, float* out) {
     // Occlusion regions (the outer camera, or the under-display camera while it streams) on top
     // of the safe area: only the part that reaches further inward than the safe inset counts, so
     // nothing is double-counted and the layout can dodge the camera when it activates.
+#if !TARGET_OS_VISION   // UIViewReservedRegion is an iPhone Duo API; the visionOS SDK does not declare it
     if (@available(iOS 27.1, *)) {
       const CGRect bounds = metal_view.bounds;
       for (UIViewReservedRegion* region in [metal_view reservedRegionsOfKind:[UIViewReservedRegionKind occlusionRegionKind]]) {
@@ -99,6 +102,7 @@ bool window_sync_apple(void* uiwindow, float* out) {
       out[9] = std::max(0.0f, out[9]); out[10] = std::max(0.0f, out[10]);
       out[8] = std::max(0.0f, out[8]); out[11] = std::max(0.0f, out[11]);
     }
+#endif
     return drawable.width > 0 && drawable.height > 0 && out[2] > 0 && out[3] > 0;
   }
   return false;
@@ -130,6 +134,7 @@ namespace host { void log(const char* format, ...); }
 // the session log, so a pose-dependent bug report says which pose it happened in. Layout never
 // reads the angle — that is what the reserved-region queries are for.
 void window_hinge_watch_apple(void* uiwindow) {
+#if !TARGET_OS_VISION   // UIHingeInteraction is an iPhone Duo API; the visionOS SDK does not declare it
   if (@available(iOS 27.1, *)) {
     UIWindow* window = (__bridge UIWindow*)uiwindow;
     if (!window) return;
@@ -152,5 +157,6 @@ void window_hinge_watch_apple(void* uiwindow) {
     UIView* view = window.rootViewController.view ?: window;
     [view addInteraction:interaction];
   }
+#endif
 }
 #endif

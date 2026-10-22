@@ -33,6 +33,9 @@ struct OverlayFrame {
 };
 // Everything drawn over the game: touch controls, the in-game menu and the performance HUD.
 bool game_overlay(OverlayFrame& out);
+// Menu and HUD only (no touch controls, no letterbox artwork) at an explicit client size; the
+// Vision Pro mirror uses it, because its "window" is the game picture itself.
+void game_overlay_menu_only(OverlayFrame& out, int ww, int wh);
 // Fills `out` with the current overlay; returns false when nothing should be drawn.
 bool touch_overlay(OverlayFrame& out);
 void touch_set_opacity(float opacity);    // 0..1, user setting

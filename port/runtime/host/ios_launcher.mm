@@ -625,6 +625,7 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
 @property(nonatomic) host::LauncherSettings* settings;
 @property(nonatomic) host::Dashboard dashboard;
 @property(nonatomic) BOOL done, playPressed, busy;
+@property(nonatomic, copy) void (^onFinished)(BOOL playPressed);   // Xelee mode (visionOS): the game thread waits on this instead of a nested run loop
 @property(nonatomic) UIScrollView* scroll;
 @property(nonatomic) UIStackView* cardColumns; @property(nonatomic) NSLayoutConstraint* maxWidth;   // two columns of cards when wide
 @property(nonatomic) NSLayoutConstraint* foldLeft;   // active only while a fold band splits the two columns
@@ -871,6 +872,7 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
 - (void)rebalanceColumnsForFold:(BOOL)wide {
   CGFloat spacing = 24, leftWidth = 0;
   if (wide) {
+#if !TARGET_OS_VISION   // UIViewReservedRegion is an iPhone Duo API; the visionOS SDK does not declare it
     if (@available(iOS 27.1, *)) {
       const CGRect safe = self.view.safeAreaLayoutGuide.layoutFrame;
       const CGFloat width = MIN(self.maxWidth.constant, safe.size.width - 40);
@@ -887,6 +889,7 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
         break;
       }
     }
+#endif
   }
   self.cardColumns.spacing = wide ? spacing : 16;
   self.cardColumns.distribution = wide && leftWidth == 0 ? UIStackViewDistributionFillEqually : UIStackViewDistributionFill;
@@ -1566,15 +1569,53 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
   self.playPressed = YES;
   [self.playButton.layer removeAnimationForKey:@"breathe"];
   [UIView animateWithDuration:0.28 animations:^{ self.view.alpha = 0; self.view.transform = CGAffineTransformMakeScale(0.97, 0.97); } completion:nil];
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ self.done = YES; });
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    self.done = YES;
+    if (self.onFinished) self.onFinished(self.playPressed);
+  });
 }
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskAll; }
 @end
 
+#if TARGET_OS_VISION
+#include "../gx/mr_bridge.h"   // dashdance_vision_show_dashboard and friends (global scope, C linkage)
+#endif
+
 namespace host {
+
+#if TARGET_OS_VISION
+static MULauncherController* g_vision_controller = nil;   // hosted by SwiftUI until Play
+#endif
+
 void mac_show_error(const std::string& title, const std::string& detail) { std::fprintf(stderr, "%s: %s\n", title.c_str(), detail.c_str()); }
 
 bool launcher_run(LauncherSettings& settings, const std::string& error) {
+#if TARGET_OS_VISION
+  // Xelee mode: the app is a SwiftUI app, whose main run loop must keep running for windows and
+  // appearance transitions to work. The controller is hosted inside the SwiftUI window
+  // (dashdance_vision_take_controller), and this — the game thread — just waits for Play.
+  @autoreleasepool {
+    __block MULauncherController* controller = nil;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+      controller = [[MULauncherController alloc] init];
+      controller.settings = &settings;
+      controller.startupError = error.empty() ? nil : [NSString stringWithUTF8String:error.c_str()];
+    });
+    if (!controller) return false;
+    g_vision_controller = controller;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    dispatch_sync(dispatch_get_main_queue(), ^{   // main-thread object: attach on main
+      controller.onFinished = ^(BOOL) { dispatch_semaphore_signal(done); };
+    });
+    dashdance_vision_show_dashboard();   // Swift swaps the placeholder for the dashboard host
+    while (dispatch_semaphore_wait(done, DISPATCH_TIME_NOW) != 0) usleep(16 * 1000);
+    settings.display_hz = 90;   // Vision Pro composites at its own fixed rate (no UIScreen query)
+    const bool play = controller.playPressed;
+    controller.settings = nullptr;
+    g_vision_controller = nil;
+    return play;
+  }
+#else
   @autoreleasepool {
     UIWindowScene* scene = nil;
     for (int wait = 0; wait < 200 && !scene; ++wait) {
@@ -1599,5 +1640,17 @@ bool launcher_run(LauncherSettings& settings, const std::string& error) {
     CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, true);
     return controller.playPressed;
   }
+#endif
 }
+
 }  // namespace host
+
+#if TARGET_OS_VISION
+// The dashboard controller for the SwiftUI host (Xelee mode). Called on the main thread by Swift;
+// hands the retained controller over.
+void* dashdance_vision_take_controller(void) {
+  MULauncherController* controller = host::g_vision_controller;
+  host::g_vision_controller = nil;
+  return (__bridge_retained void*)controller;   // the +1 moves to Swift's takeRetainedValue()
+}
+#endif

@@ -34,10 +34,21 @@
 #include <algorithm>
 #include <mach-o/dyld.h>
 #include <pthread/qos.h>
+#include <thread>
 #include <unistd.h>
+#include <CoreFoundation/CoreFoundation.h>
 #include <TargetConditionals.h>
-#if TARGET_OS_IPHONE
+#if TARGET_OS_IPHONE && !TARGET_OS_VISION
 #include <SDL3/SDL_main.h>
+#endif
+#if TARGET_OS_VISION
+// The visionOS app is a Swift @main (port/app/visionos): it calls into this flow on a game
+// thread and drives the dashboard + immersive space on the main thread. SDL_main's entry was
+// replaced by the Swift one; only its main-ready call is used.
+void dashdance_vision_set_space_hooks(void (*request_open)(void), int (*is_open)(void));
+extern "C" void SDL_SetMainReady(void);
+void dashdance_vision_request_space(void);
+int dashdance_vision_space_opened(void);
 #endif
 
 #ifndef MELEE_PORT_VERSION
@@ -78,7 +89,10 @@ void usage() {
       "  --profile-dir DIR        app profile root (settings, Aurora preferences)\n"
       "  --cache-dir DIR          pipeline cache and ISO hash cache\n"
       "  --log-file FILE          console log copy\n"
+      "  --lossless-inspect       list the tables of a Lossless Adapter in configuration mode (plugged in with its button held)\n"
+      "  --lossless-setup         install the Dashdance profile on it (first plugged controller on port 1) and boot PC mode\n"
       "  --script FILE            deterministic input script (replaces physical input)\n"
+      "  --mr                     Xelee mode (visionOS): play on a floating screen in the room after Play\n"
       "  --frames N               stop after N retraces\n"
       "  --fast                   no real-time pacing\n"
       "  --time-base N            preset guest time base\n"
@@ -168,7 +182,7 @@ static std::string session_log_path(const fs::path& dir) {
   return path.string();
 }
 
-int main(int argc, char** argv) {
+int dashdance_main(int argc, char** argv) {
   pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);   // the game simulation runs on this thread: keep it on performance cores
   host::Options& o = host::options;
   auto& online = slippi::online::config();
@@ -183,6 +197,7 @@ int main(int argc, char** argv) {
   float overlay_opacity_arg = -1.0f, sharpness_arg = -1.0f;
   int upscaler_arg = -1;
   bool widescreen_arg = false, window_arg = false;
+  bool mr_arg = false;
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     auto next = [&]() -> const char* { if (i + 1 >= argc) { usage(); std::exit(2); } return argv[++i]; };
@@ -225,6 +240,7 @@ int main(int argc, char** argv) {
     else if (a == "--cache-dir") cache_dir = next();
     else if (a == "--log-file") log_file = next();
     else if (a == "--script") script = next();
+    else if (a == "--mr") mr_arg = true;
     else if (a == "--frames") o.frames = (uint32_t)std::strtoul(next(), nullptr, 0);
     else if (a == "--fast") o.fast = true;
     else if (a == "--time-base") { o.time_base = std::strtoull(next(), nullptr, 0); o.time_base_set = true; }
@@ -235,12 +251,25 @@ int main(int argc, char** argv) {
     else if (a == "--trace-calls") o.trace_calls = true;
     else if (a == "--quiet") o.quiet = true;
     else if (a == "--hang-watch") o.hang_watch = std::atof(next());
+    else if (a == "--lossless-inspect" || a == "--lossless-setup") {   // the Lossless Adapter in configuration mode: list its tables, or install the Dashdance profile
+      host::LosslessConfigInfo info;
+      if (!host::lossless_config_inspect(info)) { std::fprintf(stderr, "lossless adapter: %s (plug it in while holding its button; the LED turns white)\n", info.error.c_str()); return 1; }
+      std::printf("lossless adapter: %s\n", info.summary.c_str());
+      if (a == "--lossless-setup") { std::string message; const bool ok = host::lossless_config_install(message); std::printf("lossless adapter: %s\n", message.c_str()); return ok ? 0 : 1; }
+      return 0;
+    }
     else if (!a.empty() && a[0] != '-' && iso_arg.empty()) iso_arg = a;   // drag-and-drop / open-with launch
     else { usage(); return 2; }
   }
   if (iso_arg.empty()) { if (const char* env = std::getenv("MELEE_ISO")) iso_arg = env; }
+  const bool mr_mode = mr_arg || (std::getenv("MELEE_MR") && *std::getenv("MELEE_MR") && *std::getenv("MELEE_MR") != '0');
+  gfx.mr_mirror = mr_mode;   // only consumed by the Vision Pro immersive renderer
 
   const fs::path support = fs::path(home_dir()) / "Library/Application Support/Dashdance";
+#if TARGET_OS_VISION
+  // SDL_init is not thread-affine, but its UIKit driver wants main ready: no SDL_main ran.
+  SDL_SetMainReady();
+#endif
   for (const char* old_name : {"iSlippi", "Shine", "MeleeUnlocked"}) {   // carry settings, saves and replays over from earlier names
     std::error_code ec;
     const fs::path previous = fs::path(home_dir()) / "Library/Application Support" / old_name;
@@ -340,6 +369,16 @@ int main(int argc, char** argv) {
     if (!settings.online) offline = true;
     if (ensure_dir(support.string(), "support")) save_launcher_ini(remembered, settings);
   }
+#if TARGET_OS_VISION
+  if (mr_mode) {
+    // Xelee mode: open the mixed-style immersive space now (SwiftUI shows its confirmation on
+    // the free main thread), then start the game on this thread.
+    dashdance_vision_request_space();
+    const double deadline = host::now_seconds() + 20.0;
+    while (!dashdance_vision_space_opened() && host::now_seconds() < deadline) usleep(50 * 1000);
+    host::log("xelee: immersive space %s", dashdance_vision_space_opened() ? "open" : "did not open; continuing on the flat window");
+  }
+#endif
   // Command-line flags win over remembered launcher values.
   host::touch_set_opacity(overlay_opacity_arg >= 0.0f ? overlay_opacity_arg : settings.overlay_opacity);
   gfx.widescreen = widescreen_arg || settings.widescreen;
@@ -406,9 +445,21 @@ int main(int argc, char** argv) {
   bool audio_opened = false;
   int code = 0;
   try {
+#if TARGET_OS_VISION
+    // SDL's UIKit window wants the main thread; the game runs on its own thread from here on.
+    __block void* mr_layer = nullptr;
+    __block int mr_client_w = 0, mr_client_h = 0;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+      mr_layer = host::window_create((int)window_w, (int)window_h, L"Dashdance", !hidden);
+      host::window_client_size(&mr_client_w, &mr_client_h);
+    });
+    void* layer = mr_layer;
+    int client_w = mr_client_w, client_h = mr_client_h;
+#else
     void* layer = host::window_create((int)window_w, (int)window_h, L"Dashdance", !hidden);
     int client_w = 0, client_h = 0;
     host::window_client_size(&client_w, &client_h);
+#endif
     gfx.cache_dir = cache_dir;
     backend = gx::create_metal_backend(layer, client_w, client_h, gfx);
     host::log("display: %.0f Hz refresh; the game simulates at 60 Hz and each frame is shown on the next refresh slot", host::window_refresh_rate());
@@ -509,3 +560,18 @@ int main(int argc, char** argv) {
   host::close_log_file();
   return code;
 }
+
+#if TARGET_OS_VISION
+// SwiftUI calls this (off the main thread is fine): the whole flow — dashboard, then game —
+// runs on its own thread (UIKit windows it creates are marshalled to the main thread), and the
+// process exits when the game exits, as in the plain-main builds on macOS and iOS.
+void dashdance_vision_main(void) {
+  std::thread([] {
+    static char arg0[] = "Dashdance";
+    char* argv[] = {arg0};
+    std::exit(dashdance_main(1, argv));
+  }).detach();
+}
+#else
+int main(int argc, char** argv) { return dashdance_main(argc, argv); }
+#endif

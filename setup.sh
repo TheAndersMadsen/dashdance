@@ -174,7 +174,7 @@ print((ok or d or [{}])[0].get('identifier',''))" 2>/dev/null)"
     fi
     ;;
   ios|visionos)
-    if [[ "$TARGET" == "ios" ]]; then BUILD="$ROOT/build/ios-sim"; SYS=iOS; SDK=iphonesimulator; MIN=17.0; else BUILD="$ROOT/build/visionos-sim"; SYS=visionOS; SDK=xrsimulator; MIN=1.0; fi
+    if [[ "$TARGET" == "ios" ]]; then BUILD="$ROOT/build/ios-sim"; SYS=iOS; SDK=iphonesimulator; MIN=17.0; else BUILD="$ROOT/build/visionos-sim"; SYS=visionOS; SDK=xrsimulator; MIN=2.0; fi
     step "Generating the port"
     python3 "$ROOT/tools/bootstrap_port.py" --decomp-root "$DECOMP" --dol "$DOL" --build-dir "$BUILD" --gct-base 0x8065CC80 --macos-arch arm64 --stage generate
     step "Building the $SYS Simulator app"

@@ -798,4 +798,10 @@ bool game_overlay(OverlayFrame& out) {
   menu_overlay(out, w, h, touch);
   return !out.shapes.empty() || !out.texts.empty();
 }
+void game_overlay_menu_only(OverlayFrame& out, int ww, int wh) {
+  out.shapes.clear();
+  out.texts.clear();
+  out.alpha = 1.0f;
+  menu_overlay(out, ww, wh, false);
+}
 }  // namespace host

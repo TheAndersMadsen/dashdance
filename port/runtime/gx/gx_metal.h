@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include "gx_core.h"
+#include "mr_bridge.h"
 #include "overlay.h"
 #include <cstdint>
 #include <functional>
@@ -24,12 +25,17 @@ struct MetalOptions {
   uint32_t capture_frame = 0;
   uint32_t capture_every = 0;
   std::string cache_dir;     // pipelines.bin lives here: every pipeline seen, precompiled in the background next launch
+  bool mr_mirror = false;    // Xelee mode: also render each presented frame + the in-game menu into the
+                             // Vision Pro mirror ring (see mr_bridge.h); the flat window keeps presenting
 };
 
 // `layer` is a CAMetalLayer*; `w`/`h` the drawable size in pixels.
 Backend* create_metal_backend(void* layer, int w, int h, const MetalOptions& options);
 void metal_resize(Backend* backend, int w, int h);
 void metal_set_options(Backend* backend, const MetalOptions& options);
+// Xelee mode (visionOS): copy of the published mirror for the immersive quad; false when the
+// backend is not running with MetalOptions::mr_mirror.
+bool metal_mr_snapshot(DashdanceMrFrame* out);
 // Caps on the internal-resolution multiplier, applied to both auto and explicit scales and re-evaluated
 // every frame: `device_cap` for the device class (phones: 2), `thermal_cap` from the thermal state
 // (serious: 2, critical: 1). 0 = no cap.

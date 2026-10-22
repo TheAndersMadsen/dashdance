@@ -66,6 +66,15 @@ struct PsoKeyHash { size_t operator()(const PsoKey& k) const {
 struct TextureEntry { id<MTLTexture> texture = nil; uint32_t width = 0, height = 0, levels = 1; uint64_t last_used = 0; };
 struct Pipeline { id<MTLRenderPipelineState> state = nil; };
 
+// The published Xelee-mode mirror (mr_bridge.h). One backend runs at a time; its ring lives here
+// so the Swift renderer can read it through the C ABI while the render thread keeps updating it.
+struct MrMirror {
+  std::mutex mutex;
+  DashdanceMrFrame frame{};
+  bool active = false;
+};
+static MrMirror g_mr_mirror;
+
 struct BlitConstants { float rect[4]; float sharp[4]; float box[4]; };
 struct ClearConstants { float color[4]; float depth; float pad[3]; };
 
@@ -174,6 +183,11 @@ class MetalBackend final : public Backend {
     if (compile_queue_) dispatch_barrier_sync(compile_queue_, ^{});   // pending background compiles still reference this
     if (precompile_queue_) dispatch_sync(precompile_queue_, ^{});
     wait_idle();
+    if (mr_enabled_) {
+      std::lock_guard<std::mutex> lock(g_mr_mirror.mutex);
+      g_mr_mirror.active = false;
+      g_mr_mirror.frame = {};
+    }
   }
   void submit_frame(const Frame& frame) override { submit(frame, nullptr); }
   void submit_frame(const Frame& frame, const DrawMatrices* overrides) override { submit(frame, overrides); }
@@ -240,6 +254,7 @@ class MetalBackend final : public Backend {
     vertex_descriptor_.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
     create_blit_pipelines();
     create_efb();
+    if (opts_.mr_mirror) mr_init();
     host::log("metal: %s", device_.name.UTF8String);
   }
 
@@ -948,6 +963,109 @@ class MetalBackend final : public Backend {
     return true;
   }
 
+  // ---- Xelee mode (visionOS): the mirror the immersive quad consumes (mr_bridge.h).
+  // Each presented frame also renders the picture and the in-game menu into ring slot
+  // `frame_counter_ % 3`; a shared event tells the quad the sequence, another paces the game
+  // back when it wants to reuse a slot the quad has not finished reading. All waits are GPU-side:
+  // neither the simulation nor the flat present ever blocks on the headset.
+  void mr_init() {
+    mr_done_event_ = [device_ newSharedEvent];
+    mr_read_event_ = [device_ newSharedEvent];
+    mr_enabled_ = true;
+    std::lock_guard<std::mutex> lock(g_mr_mirror.mutex);
+    g_mr_mirror.frame = {};
+    g_mr_mirror.frame.done = (__bridge void*)mr_done_event_;
+    g_mr_mirror.frame.read = (__bridge void*)mr_read_event_;
+    g_mr_mirror.active = true;
+    host::log("metal: Xelee mirror on: the picture and in-game menu feed the Vision Pro quad");
+  }
+
+  void render_mr(const EfbCopy& c) {
+    end_pass();   // the flat present normally closed the draw pass; in drain mode it is still open
+    const uint32_t w = std::min<uint32_t>(c.src_w * scale_, efb_w_), h = std::min<uint32_t>(c.src_h * scale_, efb_h_);
+    if (!w || !h) return;
+    // Skip only while the quad is more than two published frames behind: the slot it is reading
+    // must not be the slot this frame would write. The check compares against the published
+    // sequence (not the frame counter), so when the quad goes away entirely the game publishes up
+    // to two frames ahead and then holds — and the moment the quad consumes again, everything
+    // resumes. No consumer, no headset, no deadlock either way.
+    if (mr_sequence_ > 0 && mr_read_event_.signaledValue + 2 < mr_sequence_) return;
+    const int slot = (int)((mr_sequence_ + 1) % FRAME_SLOTS);   // this publish's slot
+    if ((int)w != mr_w_ || (int)h != mr_h_) {   // picture size changed (widescreen, scale caps): rebuild the ring,
+      for (int i = 0; i < FRAME_SLOTS; ++i) {   // keeping the old textures one rebuild long for the quad's in-flight reads
+        if (mr_game_[i]) { mr_retire_.push_back(mr_game_[i]); mr_retire_.push_back(mr_overlay_[i]); mr_game_[i] = nil; mr_overlay_[i] = nil; }
+      }
+      mr_retire_.erase(mr_retire_.begin(), mr_retire_.size() > 12 ? mr_retire_.begin() + (mr_retire_.size() - 12) : mr_retire_.begin());
+      mr_w_ = (int)w; mr_h_ = (int)h;
+      host::log("metal: Xelee mirror ring is now %ux%u", w, h);
+    }
+    if (!mr_game_[slot]) {
+      MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
+      td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+      td.storageMode = MTLStorageModePrivate;
+      mr_game_[slot] = [device_ newTextureWithDescriptor:td];
+      MTLTextureDescriptor* td2 = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
+      td2.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+      td2.storageMode = MTLStorageModePrivate;
+      mr_overlay_[slot] = [device_ newTextureWithDescriptor:td2];
+    }
+    ++mr_sequence_;   // this publish's sequence; the quad reads slot sequence % FRAME_SLOTS
+    // GPU-side: the quad must have finished reading this slot's previous user (three publishes ago).
+    const uint64_t wait_value = mr_sequence_ > FRAME_SLOTS ? mr_sequence_ - FRAME_SLOTS : 0;
+    [command_ encodeWaitForEvent:mr_read_event_ value:wait_value];
+    // The picture: the same blit the flat window gets (MetalFX output when it ran).
+    BlitConstants bc{{(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT},
+                     {1.0f / std::max((float)efb_w_, 1.0f), 1.0f / std::max((float)efb_h_, 1.0f), 0.0f, 0.0f},
+                     {1, 1, 0, 0}};
+    id<MTLTexture> source = efb_color_;
+    if (fx_presented_ && fx_out_) {
+      source = fx_out_;
+      bc = {{1, 1, 0, 0}, {1.0f / fx_out_w_, 1.0f / fx_out_h_, 0.0f, 0.0f}, {1, 1, 0, 0}};
+    }
+    MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
+    rp.colorAttachments[0].texture = mr_game_[slot];
+    rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> enc = [command_ renderCommandEncoderWithDescriptor:rp];
+    [enc setViewport:MTLViewport{0, 0, (double)w, (double)h, 0, 1}];
+    [enc setRenderPipelineState:blit_present_];
+    [enc setVertexBytes:&bc length:sizeof bc atIndex:0];
+    [enc setFragmentBytes:&bc length:sizeof bc atIndex:0];
+    [enc setFragmentTexture:source atIndex:0];
+    [enc setFragmentSamplerState:blit_sampler_ atIndex:0];
+    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [enc endEncoding];
+    // The in-game menu / HUD on its own layer: the quad composites it over the picture, exactly
+    // as the flat window draws it over the letterboxed picture. The ring is the picture itself,
+    // so the menu's shapes land relative to the game content.
+    mr_overlay_frame_.shapes.clear();
+    mr_overlay_frame_.texts.clear();
+    host::game_overlay_menu_only(mr_overlay_frame_, (int)w, (int)h);
+    MTLRenderPassDescriptor* rp2 = [MTLRenderPassDescriptor renderPassDescriptor];
+    rp2.colorAttachments[0].texture = mr_overlay_[slot];
+    rp2.colorAttachments[0].loadAction = MTLLoadActionClear;
+    rp2.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
+    rp2.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> enc2 = [command_ renderCommandEncoderWithDescriptor:rp2];
+    [enc2 setViewport:MTLViewport{0, 0, (double)w, (double)h, 0, 1}];
+    draw_shapes(enc2, (float)w, (float)h, mr_overlay_frame_);
+    draw_texts(enc2, (float)w, (float)h, mr_overlay_frame_);
+    [enc2 endEncoding];
+    // GPU-side: the quad waits for this before sampling the slot.
+    [command_ encodeSignalEvent:mr_done_event_ value:mr_sequence_];
+    {
+      std::lock_guard<std::mutex> lock(g_mr_mirror.mutex);
+      DashdanceMrFrame& f = g_mr_mirror.frame;
+      f.sequence = mr_sequence_;
+      f.width = (int32_t)w; f.height = (int32_t)h;
+      f.aspect = (float)c.src_w / (float)c.src_h;
+      for (int i = 0; i < FRAME_SLOTS; ++i) {
+        f.game[i] = (__bridge void*)mr_game_[i];
+        f.overlay[i] = (__bridge void*)mr_overlay_[i];
+      }
+    }
+  }
+
   struct OvShape { float rect[4]; float color[4]; float params[4]; uint32_t label; float label_w, label_h, pad; };
   struct OvConstants { float size[2]; float alpha; float pad; float labels[16][4]; };
 
@@ -1041,11 +1159,11 @@ class MetalBackend final : public Backend {
     for (unsigned char c : t) if (c >= 32 && c < 127) w += glyphs_[c - 32].advance * k;
     return w;
   }
-  void draw_texts(id<MTLRenderCommandEncoder> enc, float ww, float wh) {
-    if (!glyph_atlas_ || overlay_frame_.texts.empty()) return;
+  void draw_texts(id<MTLRenderCommandEncoder> enc, float ww, float wh, const host::OverlayFrame& frame) {
+    if (!glyph_atlas_ || frame.texts.empty()) return;
     struct TxGlyphCpu { float rect[4]; float uv[4]; float color[4]; };
     std::vector<TxGlyphCpu> quads;
-    for (const host::OverlayText& t : overlay_frame_.texts) {
+    for (const host::OverlayText& t : frame.texts) {
       float size = t.size;
       if (t.max_w > 0.0f) { const float w = text_width(t.text, t.size); if (w > t.max_w) size = t.size * t.max_w / w; }   // fit, don't overflow
       const float k = size / glyph_font_px_;
@@ -1096,19 +1214,19 @@ class MetalBackend final : public Backend {
 #endif
     if (!visible && !overload_warning_) return;
     [enc setViewport:MTLViewport{0, 0, ww, wh, 0, 1}];
-    draw_shapes(enc, ww, wh);
-    draw_texts(enc, ww, wh);
+    draw_shapes(enc, ww, wh, overlay_frame_);
+    draw_texts(enc, ww, wh, overlay_frame_);
   }
-  void draw_shapes(id<MTLRenderCommandEncoder> enc, float ww, float wh) {
-    if (overlay_frame_.shapes.empty()) return;
+  void draw_shapes(id<MTLRenderCommandEncoder> enc, float ww, float wh, const host::OverlayFrame& frame) {
+    if (frame.shapes.empty()) return;
     static_assert(sizeof(OvShape) == 64, "overlay shape layout must match the shader");
     static_assert(sizeof(OvConstants) == 272, "overlay constants layout must match the shader");
     static_assert(host::kOverlayLabelCount <= 16, "the shader holds 16 label rects");
     std::vector<OvShape> shapes;
-    shapes.reserve(overlay_frame_.shapes.size());
-    for (const host::OverlayShape& s : overlay_frame_.shapes)
+    shapes.reserve(frame.shapes.size());
+    for (const host::OverlayShape& s : frame.shapes)
       shapes.push_back({{s.x0, s.y0, s.x1, s.y1}, {s.r, s.g, s.b, s.a}, {s.corner, s.ring, s.pressed, 0.0f}, s.label, s.label_w, s.label_h, 0.0f});
-    OvConstants oc{{ww, wh}, overlay_frame_.alpha, 0.0f, {}};
+    OvConstants oc{{ww, wh}, frame.alpha, 0.0f, {}};
     std::memcpy(oc.labels, overlay_labels_, sizeof oc.labels);
     [enc setRenderPipelineState:overlay_pipeline_];
     [enc setVertexBytes:shapes.data() length:shapes.size() * sizeof(OvShape) atIndex:0];
@@ -1171,6 +1289,10 @@ class MetalBackend final : public Backend {
           const EfbCopy& c = frame.copies[cmd.index];
           if (c.to_xfb) {
             if (!skip_present_ && present_efb(c)) presented = true;
+            // The Vision Pro quad mirrors what was presented — and when the flat window is
+            // occluded by the immersive space the quad is the primary display, so the mirror
+            // renders even while the flat present is being drained.
+            if (mr_enabled_) render_mr(c);
             // Snapshot the presented EFB before the game's clear erases it:
             // encoding this after the loop reads the cleared EFB (all-black
             // captures). The blit joins this frame's command buffer, so it
@@ -1307,6 +1429,14 @@ class MetalBackend final : public Backend {
   MetalOptions opts_;
   int client_w_, client_h_;
   id<MTLDevice> device_ = nil;
+  // Xelee mode (visionOS): the mirror ring the immersive quad samples (see mr_bridge.h).
+  bool mr_enabled_ = false;
+  id<MTLTexture> mr_game_[3] = {nil, nil, nil}, mr_overlay_[3] = {nil, nil, nil};
+  std::vector<id<MTLTexture>> mr_retire_;   // replaced ring textures, kept one rebuild long
+  id<MTLSharedEvent> mr_done_event_ = nil, mr_read_event_ = nil;
+  int mr_w_ = 0, mr_h_ = 0;
+  uint64_t mr_sequence_ = 0;
+  host::OverlayFrame mr_overlay_frame_;
   id<MTLCommandQueue> queue_ = nil;
   id<MTLCommandBuffer> command_ = nil, upload_cb_ = nil;
   id<MTLRenderCommandEncoder> encoder_ = nil;
@@ -1475,6 +1605,12 @@ static MetalThreaded* threaded(Backend* b) { std::lock_guard<std::mutex> lock(g_
 
 }  // namespace
 
+bool gx::metal_mr_snapshot(DashdanceMrFrame* out) {
+  std::lock_guard<std::mutex> lock(g_mr_mirror.mutex);
+  *out = g_mr_mirror.frame;
+  return g_mr_mirror.active;
+}
+
 Backend* create_metal_backend(void* layer, int w, int h, const MetalOptions& options) {
   MetalBackend* inner = new MetalBackend((__bridge CAMetalLayer*)layer, w, h, options);
   const char* env = std::getenv("MELEE_RENDER_THREAD");
@@ -1491,3 +1627,11 @@ uint64_t metal_frames_presented(Backend* backend) { if (MetalThreaded* t = threa
 void metal_set_overlay(Backend* backend, OverlayProvider provider) { if (MetalThreaded* t = threaded(backend)) t->set_overlay(std::move(provider)); else static_cast<MetalBackend*>(backend)->set_overlay(std::move(provider)); }
 
 }  // namespace gx
+
+// The C ABI of mr_bridge.h, at global scope (inside namespace gx these would be mangled).
+int dashdance_mr_active(void) {
+  std::lock_guard<std::mutex> lock(gx::g_mr_mirror.mutex);
+  return gx::g_mr_mirror.active ? 1 : 0;
+}
+
+int dashdance_mr_snapshot(DashdanceMrFrame* out) { return gx::metal_mr_snapshot(out) ? 1 : 0; }

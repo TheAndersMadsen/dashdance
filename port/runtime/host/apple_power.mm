@@ -198,6 +198,17 @@ void power_play_begin() {
       g_activity = [NSProcessInfo.processInfo beginActivityWithOptions:NSActivityUserInitiated | NSActivityLatencyCritical | NSActivityIdleDisplaySleepDisabled | NSActivityIdleSystemSleepDisabled
                                                                 reason:@"Playing Super Smash Bros. Melee"];
 #else
+    // On visionOS this runs on the game thread (the app is a SwiftUI app, whose main thread keeps
+    // serving the interface): UIKit and the audio session want main, so marshal them there.
+#if TARGET_OS_VISION
+    dispatch_sync(dispatch_get_main_queue(), ^{
+      UIApplication.sharedApplication.idleTimerDisabled = YES;   // the game is played with a controller: never dim the screen
+      AVAudioSession* session = AVAudioSession.sharedInstance;
+      [session setPreferredSampleRate:48000 error:nil];
+      [session setPreferredIOBufferDuration:0.005 error:nil];
+      g_bluetooth_audio = route_is_wireless();
+    });
+#else
     UIApplication.sharedApplication.idleTimerDisabled = YES;   // the game is played with a controller: never dim the screen
     if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone) g_device_cap = 2;
 #if !TARGET_OS_VISION
@@ -219,6 +230,7 @@ void power_play_begin() {
     [session setPrefersNoInterruptionsFromSystemAlerts:YES error:nil];
 #endif
     g_bluetooth_audio = route_is_wireless();
+#endif
     if (!g_route_observer)
       g_route_observer = [NSNotificationCenter.defaultCenter addObserverForName:AVAudioSessionRouteChangeNotification object:nil queue:nil usingBlock:^(NSNotification*) {
         const bool wireless = route_is_wireless();
