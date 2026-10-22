@@ -28,6 +28,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -49,6 +50,7 @@ void dashdance_vision_set_space_hooks(void (*request_open)(void), int (*is_open)
 extern "C" void SDL_SetMainReady(void);
 void dashdance_vision_request_space(void);
 int dashdance_vision_space_opened(void);
+extern "C" void dashdance_vision_game_started(void);
 #endif
 
 #ifndef MELEE_PORT_VERSION
@@ -374,6 +376,7 @@ int dashdance_main(int argc, char** argv) {
   ar_mode = ar_mode || settings.ar_mode;
   gfx.ar_mirror = ar_mode;   // only consumed by the Vision Pro immersive renderer
 #if TARGET_OS_VISION
+  dashdance_vision_game_started();
   bool ar_space_open = false;
   if (ar_mode) {
     // AR Mode: open the mixed-style immersive space now (SwiftUI shows its confirmation on
@@ -585,10 +588,14 @@ static int g_ar_argc = 1;
 static char** g_ar_argv = nullptr;
 void dashdance_vision_store_args(int argc, char** argv) { g_ar_argc = argc; g_ar_argv = argv; }
 void dashdance_vision_main(void) {
-  std::thread([] {
-    std::exit(dashdance_main(g_ar_argc, g_ar_argv));
-  }).detach();
+  static std::once_flag started;
+  std::call_once(started, [] {
+    std::thread([] {
+      std::exit(dashdance_main(g_ar_argc, g_ar_argv));
+    }).detach();
+  });
 }
+extern "C" void dashdance_vision_restore_window(void) { host::window_set_visible(true); }
 #else
 int main(int argc, char** argv) { return dashdance_main(argc, argv); }
 #endif

@@ -1618,9 +1618,18 @@ bool launcher_run(LauncherSettings& settings, const std::string& error) {
     dashdance_vision_show_dashboard();   // Swift swaps the placeholder for the dashboard host
     while (dispatch_semaphore_wait(done, DISPATCH_TIME_NOW) != 0) usleep(16 * 1000);
     settings.display_hz = 90;   // Vision Pro composites at its own fixed rate (no UIScreen query)
-    const bool play = controller.playPressed;
-    controller.settings = nullptr;
-    g_vision_controller = nil;
+    __block bool play = false;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+      // The repeating timer retains the hosted controller. Stop its callbacks before clearing
+      // settings: a controller/rate change would otherwise refresh cards through a null pointer.
+      [controller.controllerTimer invalidate];
+      controller.controllerTimer = nil;
+      controller.view.userInteractionEnabled = NO;
+      play = controller.playPressed;
+      controller.onFinished = nil;
+      controller.settings = nullptr;
+      g_vision_controller = nil;
+    });
     return play;
   }
 #else

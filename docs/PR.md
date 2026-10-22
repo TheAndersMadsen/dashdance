@@ -90,6 +90,8 @@ All in `tools/mac/`, written up for agents in the `fix-logs` skill (`desync.md`,
 
 - Install simulator builds on the matching Apple platform and honor `--udid` when several simulators are booted.
 
+- Keep Vision Pro game startup single-shot, restore its existing window in the recreated main scene, and clean up launcher timers and UIKit state on the main thread.
+
 ## Before opening
 
 - Drop the "Fork workflow" section from `CLAUDE.md`, `.agents/skills/fix-logs`, `.claude/skills/fix-logs` and this file.

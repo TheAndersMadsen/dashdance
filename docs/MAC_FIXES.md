@@ -93,3 +93,13 @@ could receive the Vision Pro build or prevent installation. Select booted device
 platform, honor `--udid`, and require a choice if several matching devices are running. Verified
 with iOS and visionOS simulators booted together: the explicit Vision Pro target installed and
 launched successfully. `zsh -n setup.sh` passes.
+
+## Vision Pro game lifecycle — 2026-10-22
+
+The dashboard timer could outlive its settings pointer after Play, window restoration depended on
+a destroyed SwiftUI view, and game shutdown touched UIKit from its worker thread. Stop the timer
+on main, retain the window-opening action, associate the existing SDL window with the newly
+created main scene, and guard game startup with `call_once`. Window visibility, destruction and
+idle-timer cleanup now run on main. A 2400-retrace Training run completed cleanup without the
+previous `BSServiceMainRunLoopQueue` assertion; its scene-expectation failure was traced to a
+separate disabled trace option. Real close/reopen and Digital Crown interruptions remain unverified.

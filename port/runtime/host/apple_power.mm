@@ -251,7 +251,13 @@ void power_play_end() {
 #if TARGET_OS_OSX
     if (g_activity) { [NSProcessInfo.processInfo endActivity:g_activity]; g_activity = nil; }
 #else
+#if TARGET_OS_VISION
+    // The SwiftUI app's game thread also performs shutdown. Scene settings require main.
+    if (NSThread.isMainThread) UIApplication.sharedApplication.idleTimerDisabled = NO;
+    else dispatch_sync(dispatch_get_main_queue(), ^{ UIApplication.sharedApplication.idleTimerDisabled = NO; });
+#else
     UIApplication.sharedApplication.idleTimerDisabled = NO;
+#endif
 #if !TARGET_OS_VISION
     if (g_pacer) { [g_pacer.thread cancel]; g_pacer = nil; }   // back to the system's adaptive refresh: saves battery in menus
 #endif

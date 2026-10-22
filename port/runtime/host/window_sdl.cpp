@@ -35,6 +35,10 @@ bool window_sync_apple(void* uiwindow, float* out);
 bool window_request_orientation_apple(void* uiwindow, const char* orientation);
 void window_hinge_watch_apple(void* uiwindow);   // pose breadcrumbs into the session log
 #include <dispatch/dispatch.h>
+#include <pthread.h>
+#endif
+#if defined(__APPLE__) && TARGET_OS_VISION
+extern "C" void dashdance_vision_window_created(void* uiwindow);
 #endif
 
 namespace host {
@@ -655,6 +659,12 @@ void* window_create(int w, int h, const wchar_t* title, bool visible) {
     for (int i = 0; i < count; ++i) open_gamepad(ids[i]);
     SDL_free(ids);
   }
+#if defined(__APPLE__) && TARGET_OS_VISION
+  // SwiftUI owns scene creation. Hand it the existing native window so a reopened main scene
+  // can host the same game and Metal layer, even if its marker appeared before this window.
+  void* uiwindow = SDL_GetPointerProperty(SDL_GetWindowProperties(g_window), SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, nullptr);
+  if (uiwindow) dashdance_vision_window_created(uiwindow);
+#endif
   return SDL_Metal_GetLayer(g_view);
 }
 
@@ -835,6 +845,13 @@ double window_refresh_rate() {
   return mode && mode->refresh_rate > 0 ? mode->refresh_rate : 60.0;
 }
 void window_destroy() {
+#if defined(__APPLE__) && TARGET_OS_VISION
+  // The game finishes on its own thread; SDL releases UIKit views and windows here.
+  if (!pthread_main_np()) {
+    dispatch_sync(dispatch_get_main_queue(), ^{ window_destroy(); });
+    return;
+  }
+#endif
   for (SDL_Gamepad* pad : g_gamepads) SDL_CloseGamepad(pad);
   g_gamepads.clear();
   if (g_view) { SDL_Metal_DestroyView(g_view); g_view = nullptr; }
@@ -844,8 +861,12 @@ void window_set_title(const wchar_t* title) { if (g_window) SDL_SetWindowTitle(g
 void window_set_visible(bool visible) {
   if (!g_window) return;
 #if defined(__APPLE__) && TARGET_OS_VISION
-  // UIKit window visibility is main-thread-only, and AR Mode calls this from the game thread.
-  dispatch_sync(dispatch_get_main_queue(), ^{ visible ? SDL_ShowWindow(g_window) : SDL_HideWindow(g_window); });
+  // Play hides from the game thread; SwiftUI restores from the main thread when AR closes.
+  if (pthread_main_np()) {
+    if (visible) SDL_ShowWindow(g_window); else SDL_HideWindow(g_window);
+  } else {
+    dispatch_sync(dispatch_get_main_queue(), ^{ visible ? SDL_ShowWindow(g_window) : SDL_HideWindow(g_window); });
+  }
 #else
   if (visible) SDL_ShowWindow(g_window); else SDL_HideWindow(g_window);
 #endif
