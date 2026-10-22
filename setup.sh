@@ -187,12 +187,28 @@ print((ok or d or [{}])[0].get('identifier',''))" 2>/dev/null)"
       -DMELEE_BUILD_PORT_TESTS=OFF -DMELEE_BUILD_PORT_HEADLESS=OFF -DMELEE_BUILD_PORT_METAL=ON >/dev/null
     cmake --build "$BUILD" --target melee_port_mac --parallel "$JOBS"
     APP="$BUILD/port/Dashdance.app"
-    step "Installing on a booted Simulator (boot one in Xcode › Open Developer Tool › Simulator first)"
-    if xcrun simctl list devices booted | grep -q Booted; then
-      xcrun simctl install booted "$APP"
+    step "Installing on a booted $SYS Simulator (use --udid to choose one)"
+    SIM_UDID="$(xcrun simctl list devices available --json | python3 -c '
+import json, sys
+target, requested = sys.argv[1:]
+runtime_prefix = "com.apple.CoreSimulator.SimRuntime." + ("xrOS-" if target == "visionos" else "iOS-")
+devices = [d for runtime, group in json.load(sys.stdin)["devices"].items()
+           if runtime.startswith(runtime_prefix) for d in group]
+if requested:
+    devices = [d for d in devices if d["udid"] == requested]
+    if not devices or devices[0]["state"] != "Booted":
+        sys.exit("The requested simulator must be booted and match the build platform.")
+else:
+    devices = [d for d in devices if d["state"] == "Booted"]
+    if len(devices) > 1:
+        sys.exit("Several matching simulators are booted. Choose one with --udid.")
+print(devices[0]["udid"] if devices else "")
+' "$TARGET" "$UDID")" || fail "Could not choose the $SYS Simulator."
+    if [[ -n "$SIM_UDID" ]]; then
+      xcrun simctl install "$SIM_UDID" "$APP"
       BID=app.dashdance.ios
-      C="$(xcrun simctl get_app_container booted $BID data)"; mkdir -p "$C/Documents"; cp "$ISO" "$C/Documents/melee.iso"
-      xcrun simctl launch booted $BID >/dev/null && echo "Launched. Touch controls are on by default; pair a controller in the Simulator's I/O menu."
+      C="$(xcrun simctl get_app_container "$SIM_UDID" $BID data)"; mkdir -p "$C/Documents"; cp "$ISO" "$C/Documents/melee.iso"
+      xcrun simctl launch "$SIM_UDID" $BID >/dev/null && echo "Launched. Touch controls are on by default; pair a controller in the Simulator's I/O menu."
     else
       echo "No Simulator is booted. Boot one, then: xcrun simctl install booted \"$APP\" and copy your disc into the app's Documents folder (Files app)."
     fi

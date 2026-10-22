@@ -85,3 +85,11 @@ headers; primary actions use a filled yellow surface for readable dark text. The
 resolution picker is a native menu. Launcher display information uses its own scene, and entrance
 and Play animations respect Reduce Motion. See `docs/IPHONE_DUO.md` for the simulator evidence
 and remaining pose checks. macOS and iOS simulator builds pass.
+
+## Simulator installation targeting — 2026-10-22
+
+`setup.sh --visionos` previously used the ambiguous `booted` target, so an active iOS simulator
+could receive the Vision Pro build or prevent installation. Select booted devices from the build
+platform, honor `--udid`, and require a choice if several matching devices are running. Verified
+with iOS and visionOS simulators booted together: the explicit Vision Pro target installed and
+launched successfully. `zsh -n setup.sh` passes.

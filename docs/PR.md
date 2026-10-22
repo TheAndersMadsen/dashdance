@@ -88,6 +88,8 @@ All in `tools/mac/`, written up for agents in the `fix-logs` skill (`desync.md`,
 
 - `slippi: peer health` every 5 s (unacknowledged reliable commands per ENet peer) and `MELEE_NET_DROP_CONNECT=1` (ignore incoming ENet connects, a one-way NAT) for netplay connection tests with `--local-peer`.
 
+- Install simulator builds on the matching Apple platform and honor `--udid` when several simulators are booted.
+
 ## Before opening
 
 - Drop the "Fork workflow" section from `CLAUDE.md`, `.agents/skills/fix-logs`, `.claude/skills/fix-logs` and this file.
