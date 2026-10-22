@@ -1,7 +1,7 @@
-// Xelee mode renderer: the game picture on a floating screen in the room, drawn straight into a
+// AR Mode renderer: the game picture on a floating screen in the room, drawn straight into a
 // CompositorLayer at display rate. The structure follows Apple's "Drawing fully immersive content
 // using Metal" and the "Interacting with virtual content blended with passthrough" sample (the
-// mixed-style CompositorServices reference). Placement gestures are xelee's: pinch-drag moves the
+// mixed-style CompositorServices reference). Placement gestures are AR Mode's: pinch-drag moves the
 // screen, a second pinched hand turns it (twist) and resizes it (spread); the adopted spot is
 // stored in a world anchor, which ARKit persists across launches.
 // SPDX-License-Identifier: GPL-2.0-or-later
@@ -25,7 +25,7 @@ extension LayerRenderer.Clock.Instant.Duration {
 // The sample's configuration: HDR float output, depth for the compositor, foveation as
 // supported. The quad's textures stay 8-bit sRGB views, so their bytes convert to linear on
 // sample and back through the HDR output with correct blending.
-struct MRConfiguration: CompositorLayerConfiguration {
+struct ARConfiguration: CompositorLayerConfiguration {
     func makeConfiguration(capabilities: LayerRenderer.Capabilities, configuration: inout LayerRenderer.Configuration) {
         configuration.depthFormat = .depth32Float
         configuration.colorFormat = .rgba16Float
@@ -42,7 +42,7 @@ struct MRConfiguration: CompositorLayerConfiguration {
 
 // One dedicated task runs the frame loop for the whole session; the main thread only appends
 // gesture events (under a lock), so a plain class is enough.
-final class MRScreenRenderer {
+final class ARScreenRenderer {
     static let spaceID = "melee"
 
     private let layerRenderer: LayerRenderer
@@ -54,11 +54,11 @@ final class MRScreenRenderer {
     private let arSession = ARKitSession()
     private let worldTracking = WorldTrackingProvider()
 
-    // Placement: centre, yaw-only rotation and width in metres — xelee's T · R_y · S. The picture
+    // Placement: centre, yaw-only rotation and width in metres — AR Mode's T · R_y · S. The picture
     // is upright at all times; height follows the aspect.
     private var center = SIMD3<Float>(0, -0.1, -0.85)
     private var yaw: Float = 0
-    private var width: Float = 0.7   // metres; xelee's default screen width
+    private var width: Float = 0.7   // metres; AR Mode's default screen width
     private var aspect: Float = 4.0 / 3.0
     private var placedThisSession = false
     private var placementDirty = false
@@ -75,7 +75,7 @@ final class MRScreenRenderer {
     private var viewCache: [ObjectIdentifier: MTLTexture] = [:]
     private var haveLoggedFrame = false
 
-    static let anchorKey = "xelee_anchor_uuid"
+    static let anchorKey = "ar_mode_anchor_uuid"
 
     private static let shaderSource = """
     #include <metal_stdlib>
@@ -148,7 +148,7 @@ final class MRScreenRenderer {
             do {
                 try await arSession.run([worldTracking])
             } catch {
-                NSLog("xelee: ARKit session failed (\(error)); the screen follows the head instead of the room")
+                NSLog("ar mode: ARKit session failed (\(error)); the screen follows the head instead of the room")
             }
         }
         while true {
@@ -167,8 +167,8 @@ final class MRScreenRenderer {
         frame.startUpdate()
         drainEvents()
 
-        var snap = DashdanceMrFrame()
-        let haveGame = dashdance_mr_snapshot(&snap) != 0 && snap.sequence > 0
+        var snap = DashdanceArFrame()
+        let haveGame = dashdance_ar_snapshot(&snap) != 0 && snap.sequence > 0
         if haveGame, abs(snap.aspect - aspect) > 0.01 { aspect = snap.aspect }
         if !placedThisSession {
             await placeOrRestore()
@@ -214,7 +214,7 @@ final class MRScreenRenderer {
             overlayTexture = mirrorTexture(snap.overlay, index)
             if !haveLoggedFrame {
                 haveLoggedFrame = true
-                NSLog("xelee: quad consuming the mirror: sequence %llu, slot %d, %dx%d, textures %@/%@", sequence, index, snap.width, snap.height,
+                NSLog("ar mode: quad consuming the mirror: sequence %llu, slot %d, %dx%d, textures %@/%@", sequence, index, snap.width, snap.height,
                       gameTexture.map { "\($0.width)x\($0.height)" } ?? "nil", overlayTexture.map { "\($0.width)x\($0.height)" } ?? "nil")
             }
             if let done = snap.done {
@@ -329,7 +329,7 @@ final class MRScreenRenderer {
         return point + n * simd_dot(center - point, n)
     }
 
-    // Restore the anchored spot, or start in front of where the head is (xelee's default).
+    // Restore the anchored spot, or start in front of where the head is (AR Mode's default).
     private func placeOrRestore() async {
         var anchors: [WorldAnchor]?
         anchors = await worldTracking.allAnchors
@@ -345,7 +345,7 @@ final class MRScreenRenderer {
             width = max(simd_length(x), 0.2)
             aspect = max(width / max(simd_length(y), 0.05), 0.5)
             yaw = atan2(z.x, z.z)
-            NSLog("xelee: restored the anchored spot at (%.2f, %.2f, %.2f)", center.x, center.y, center.z)
+            NSLog("ar mode: restored the anchored spot at (%.2f, %.2f, %.2f)", center.x, center.y, center.z)
             return
         }
         if let device = worldTracking.queryDeviceAnchor(atTimestamp: CACurrentMediaTime()) {
@@ -374,9 +374,9 @@ final class MRScreenRenderer {
                 let anchor = WorldAnchor(originFromAnchorTransform: pose)
                 try await worldTracking.addAnchor(anchor)
                 UserDefaults.standard.set(anchor.id.uuidString, forKey: Self.anchorKey)
-                NSLog("xelee: screen spot anchored (%@)", anchor.id.uuidString)
+                NSLog("ar mode: screen spot anchored (%@)", anchor.id.uuidString)
             } catch {
-                NSLog("xelee: anchoring failed: \(error)")
+                NSLog("ar mode: anchoring failed: \(error)")
             }
         }
     }

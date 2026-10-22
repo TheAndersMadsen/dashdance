@@ -39,10 +39,10 @@
   <key>GCSupportedGameControllers</key><array><dict><key>ProfileName</key><string>ExtendedGamepad</string></dict></array>
   <key>UIApplicationSupportsIndirectInputEvents</key><true/>
   <key>NSLocalNetworkUsageDescription</key><string>Slippi Online connects directly to your opponent.</string>
-  <!-- Xelee mode on Apple Vision Pro: world tracking anchors the screen's spot across launches;
+  <!-- AR Mode on Apple Vision Pro: world tracking anchors the screen's spot across launches;
        hand tracking is declared for the gesture work that follows. iOS ignores the visionOS keys. -->
-  <key>NSWorldSensingUsageDescription</key><string>Xelee mode anchors the game screen where you place it in your room.</string>
-  <key>NSHandsTrackingUsageDescription</key><string>Xelee mode uses hand positions to move, turn and scale the game screen.</string>
+  <key>NSWorldSensingUsageDescription</key><string>AR Mode anchors the game screen where you place it in your room.</string>
+  <key>NSHandsTrackingUsageDescription</key><string>AR Mode uses hand positions to move, turn and scale the game screen.</string>
   <!-- The dashboard window and the immersive space are two scenes (visionOS): -->
   <key>UIApplicationSceneManifest</key>
   <dict>

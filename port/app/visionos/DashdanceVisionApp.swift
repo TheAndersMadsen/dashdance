@@ -1,4 +1,4 @@
-// Xelee mode on Apple Vision Pro: a mixed-style immersive space with the game on a floating
+// AR Mode on Apple Vision Pro: a mixed-style immersive space with the game on a floating
 // screen. The Swift @main owns the process on visionOS only — macOS and iOS keep the plain
 // main() builds. The game flow (dashdance_vision_main) runs on its own thread: it hosts the
 // dashboard here via a UIViewControllerRepresentable, waits for Play, then runs the game while
@@ -65,14 +65,14 @@ struct RootView: View {
             guard want else { return }
             bridge.wantOpen = false
             Task { @MainActor in
-                switch await openImmersiveSpace(id: MRScreenRenderer.spaceID) {
+                switch await openImmersiveSpace(id: ARScreenRenderer.spaceID) {
                 case .opened:
-                    NSLog("xelee: immersive space opened")
+                    NSLog("ar mode: immersive space opened")
                     SpaceBridge.shared.setOpened(true)
                 case .error, .userCancelled:
                     fallthrough
                 @unknown default:
-                    NSLog("xelee: immersive space did not open")
+                    NSLog("ar mode: immersive space did not open")
                     SpaceBridge.shared.setOpened(false)
                 }
             }
@@ -105,13 +105,13 @@ struct DashdanceVisionApp: App {
         WindowGroup { RootView() }
         // No style modifiers here: a CompositorLayer space configures its own immersion
         // (Apple's guidance), and a mixed passthrough comes from the layer's alpha.
-        ImmersiveSpace(id: MRScreenRenderer.spaceID) {
-            CompositorLayer(configuration: MRConfiguration()) { layer in
-                let renderer: MRScreenRenderer
+        ImmersiveSpace(id: ARScreenRenderer.spaceID) {
+            CompositorLayer(configuration: ARConfiguration()) { layer in
+                let renderer: ARScreenRenderer
                 do {
-                    renderer = try MRScreenRenderer(layerRenderer: layer)
+                    renderer = try ARScreenRenderer(layerRenderer: layer)
                 } catch {
-                    fatalError("xelee: renderer setup failed: \(error)")
+                    fatalError("ar mode: renderer setup failed: \(error)")
                 }
                 Task(priority: .high) {
                     await renderer.run()

@@ -1,11 +1,11 @@
-# Xelee mode: mixed-reality Melee on Apple Vision Pro
+# AR Mode: mixed-reality Melee on Apple Vision Pro
 
 [xelee](https://github.com/rhythmerc/xelee) plays Super Smash Bros. Melee inside your room on a
 Meta Quest 3: the game screen floats in space, you place it (and, in xelee's full form, the whole
 3D arena) with your hands, menus follow a laser pointer, and sound comes from where the fighters
 are. This document is the study that brought that experience to Dashdance on Apple Vision Pro as
-an **alternative mode** — the game and its Slippi online stack are unchanged, and an immersive
-mixed-reality presentation is added alongside the flat window.
+**AR Mode** — an alternative mode in which the game and its Slippi online stack are unchanged and
+an immersive mixed-reality presentation is added alongside the flat window.
 
 Part 1 documents how xelee works (from its code and docs). Part 2 documents the Vision Pro
 platform research. Part 3 is the design and as-built state of Dashdance's implementation.
@@ -14,7 +14,7 @@ platform research. Part 3 is the design and as-built state of Dashdance's implem
 
 1. [How xelee works](#1-how-xelee-works)
 2. [Vision Pro platform research](#2-vision-pro-platform-research)
-3. [Dashdance's Xelee mode](#3-dashdances-xelee-mode)
+3. [Dashdance's AR Mode](#3-dashdances-ar-mode)
 4. [Phase 2 plan: the 3D arena](#4-phase-2-plan-the-3d-arena)
 5. [References](#5-references)
 
@@ -215,7 +215,7 @@ skeleton tracking itself is not simulated — another reason phase 1 uses spatia
 
 ---
 
-## 3. Dashdance's Xelee mode
+## 3. Dashdance's AR Mode
 
 ### 3.1 What it is
 
@@ -233,7 +233,7 @@ the foundation the 3D arena (§4) builds on.
 ### 3.2 How a frame reaches the quad
 
 Dashdance's renderer already renders every game frame into an intermediate EFB texture and
-blits the presented region to the window (`gx_metal.mm`, `present_efb`). Xelee mode adds a
+blits the presented region to the window (`gx_metal.mm`, `present_efb`). AR Mode adds a
 **mirror**: when enabled, `present_efb` additionally renders
 
 1. the game picture (the XFB source region of the EFB, exactly what the flat blit samples) into
@@ -262,7 +262,7 @@ the flat present but the mirror keeps rendering: on Vision Pro the quad is the p
 | `port/runtime/gx/mr_bridge.h` | The C ABI shared by the game, the Metal renderer and Swift |
 | `port/runtime/gx/gx_metal.{h,mm}` | `MetalOptions.mr_mirror`; the ring, the shared events, `metal_mr_snapshot()` |
 | `port/runtime/host/game_menu.cpp`, `window_sdl.cpp` | `game_overlay_menu_only()` — menu/HUD shapes without touch controls, at an explicit client size |
-| `port/app/main_mac.cpp` | `--mr` / `MELEE_MR`; on visionOS requests the immersive space after Play and waits for it before starting the game; on visionOS `main()` becomes `dashdance_main()` with the entry provided by Swift |
+| `port/app/main_mac.cpp` | `--ar` / `MELEE_AR`; on visionOS requests the immersive space after Play and waits for it before starting the game; on visionOS `main()` becomes `dashdance_main()` with the entry provided by Swift |
 | `port/app/visionos/bridge.h/.c` | The space-open hooks (registered by Swift, called by the game flow) |
 | `port/app/visionos/DashdanceVisionApp.swift` | The visionOS-only `App`: WindowGroup (inert placeholder) + `ImmersiveSpace` in `.mixed` style; `@_cdecl("main")` runs it (a static library gets no `@main` entry) |
 | `port/app/visionos/MRScreenRenderer.swift` | The `LayerRenderer` loop, quad shaders, placement gestures, world-anchor persistence |
@@ -285,13 +285,13 @@ work landed.
 
 ```bash
 ./setup.sh /path/to/melee.iso --visionos          # builds and installs into the booted Vision Pro Simulator
-SIMCTL_CHILD_MELEE_MR=1 xcrun simctl launch booted app.dashdance.ios
-# or in the app: pick disc, press Play — with MELEE_MR set the space opens automatically
+SIMCTL_CHILD_MELEE_AR=1 xcrun simctl launch booted app.dashdance.ios
+# or in the app: pick disc, press Play — with MELEE_AR set the space opens automatically
 ```
 
 On the Simulator: use the window's "Select to interact" mode — the pointer is the gaze ray,
 click = pinch (drag to move the screen, Option-click = the second hand for twist/scale).
-On device: `MELEE_MR=1` is not needed once the dashboard grows its own toggle (the env var is
+On device: `MELEE_AR=1` is not needed once the dashboard grows its own toggle (the env var is
 the phase-1 switch; the remembered-settings plumbing is deliberately untouched).
 
 ### 3.5 Verification status
@@ -302,7 +302,7 @@ image), Play → the mixed-style immersive space opens, the game boots and rende
 screen in the room with the in-game overlay composited around it, the mirror handshake stays
 live for the whole session (the quad consumes the newest published frame within two publishes),
 sim time stays at ~0.6–1.3 ms/frame with no late frames, and the flat window keeps its last
-picture until the system occludes it. With `MELEE_MR` unset, the app behaves exactly as before.
+picture until the system occludes it. With `MELEE_AR` unset, the app behaves exactly as before.
 
 Also verified on macOS (the same shared renderer files): a 600-frame scripted match with the
 mirror on runs at 1.6 ms/frame, exit 0, and a captured presented frame is byte-identical with

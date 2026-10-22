@@ -625,7 +625,7 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
 @property(nonatomic) host::LauncherSettings* settings;
 @property(nonatomic) host::Dashboard dashboard;
 @property(nonatomic) BOOL done, playPressed, busy;
-@property(nonatomic, copy) void (^onFinished)(BOOL playPressed);   // Xelee mode (visionOS): the game thread waits on this instead of a nested run loop
+@property(nonatomic, copy) void (^onFinished)(BOOL playPressed);   // AR Mode (visionOS): the game thread waits on this instead of a nested run loop
 @property(nonatomic) UIScrollView* scroll;
 @property(nonatomic) UIStackView* cardColumns; @property(nonatomic) NSLayoutConstraint* maxWidth;   // two columns of cards when wide
 @property(nonatomic) NSLayoutConstraint* foldLeft;   // active only while a fold band splits the two columns
@@ -1578,7 +1578,7 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
 @end
 
 #if TARGET_OS_VISION
-#include "../gx/mr_bridge.h"   // dashdance_vision_show_dashboard and friends (global scope, C linkage)
+#include "../gx/ar_bridge.h"   // dashdance_vision_show_dashboard and friends (global scope, C linkage)
 #endif
 
 namespace host {
@@ -1591,7 +1591,7 @@ void mac_show_error(const std::string& title, const std::string& detail) { std::
 
 bool launcher_run(LauncherSettings& settings, const std::string& error) {
 #if TARGET_OS_VISION
-  // Xelee mode: the app is a SwiftUI app, whose main run loop must keep running for windows and
+  // AR Mode: the app is a SwiftUI app, whose main run loop must keep running for windows and
   // appearance transitions to work. The controller is hosted inside the SwiftUI window
   // (dashdance_vision_take_controller), and this — the game thread — just waits for Play.
   @autoreleasepool {
@@ -1646,7 +1646,7 @@ bool launcher_run(LauncherSettings& settings, const std::string& error) {
 }  // namespace host
 
 #if TARGET_OS_VISION
-// The dashboard controller for the SwiftUI host (Xelee mode). Called on the main thread by Swift;
+// The dashboard controller for the SwiftUI host (AR Mode). Called on the main thread by Swift;
 // hands the retained controller over.
 void* dashdance_vision_take_controller(void) {
   MULauncherController* controller = host::g_vision_controller;

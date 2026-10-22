@@ -312,7 +312,7 @@ xcrun simctl install booted build/ios-sim/port/Dashdance.app
 
 Use `-DCMAKE_OSX_SYSROOT=iphoneos` for a device (sign the bundle with your team) and `-DCMAKE_SYSTEM_NAME=visionOS -DCMAKE_OSX_SYSROOT=xrsimulator -DCMAKE_OSX_DEPLOYMENT_TARGET=1.0` for the Vision Pro Simulator.
 
-On visionOS the build compiles a Swift `@main` (`port/app/visionos/`) and links SwiftUI, CompositorServices and ARKit: the app is a SwiftUI lifecycle there, and [Xelee mode](XELEE_VISIONOS.md) — Melee on a floating screen in the room, placed with your hands (`--mr` or `MELEE_MR=1`) — runs in a mixed-style immersive space beside the flat window. macOS and iOS keep the plain-`main()` builds and are untouched by it.
+On visionOS the build compiles a Swift `@main` (`port/app/visionos/`) and links SwiftUI, CompositorServices and ARKit: the app is a SwiftUI lifecycle there, and [AR Mode](AR_MODE.md) — Melee on a floating screen in the room, placed with your hands (`--ar` or `MELEE_AR=1`) — runs in a mixed-style immersive space beside the flat window. macOS and iOS keep the plain-`main()` builds and are untouched by it.
 
 `melee_port_mac --help` lists every option (window size, volume, input delay, explicit disc or Slippi folder). `melee_port_metal` and `melee_port_headless` are offline diagnostic executables used by the test suite. Developer notes live in [docs/](.): [PERFORMANCE.md](PERFORMANCE.md) explains every log signal and the measurement scripts, and [CLAUDE.md](../CLAUDE.md) is the agent and contributor guide.
 

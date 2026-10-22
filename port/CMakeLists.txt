@@ -553,7 +553,7 @@ if(MELEE_BUILD_PORT_METAL)
     set(PORT_APPLE_UI_FRAMEWORK "-framework AppKit")
   endif()
   if(CMAKE_SYSTEM_NAME STREQUAL "visionOS")
-    list(APPEND PORT_APPLE_EXTRA_SOURCES app/visionos/bridge.c)   # the Xelee-mode space hooks
+    list(APPEND PORT_APPLE_EXTRA_SOURCES app/visionos/bridge.c)   # the AR-Mode space hooks
   endif()
   # The application renders with the native Metal backend and talks to SDL3 directly;
   # Aurora is only built here for its vendored SDL3.
@@ -626,7 +626,7 @@ if(MELEE_BUILD_PORT_METAL)
   target_link_libraries(melee_port_mac PRIVATE runtime_mac guest)
   target_compile_definitions(melee_port_mac PRIVATE MELEE_PORT_VERSION="${MELEE_PORT_VERSION}")
   if(CMAKE_SYSTEM_NAME STREQUAL "visionOS")
-    # Xelee mode: the Swift @main owns the process on visionOS (main_mac.cpp's main() is compiled
+    # AR Mode: the Swift @main owns the process on visionOS (main_mac.cpp's main() is compiled
     # out there) and drives the mixed-style immersive space. Compiled with swiftc from the visionOS
     # SDK into one object; the Swift runtime itself comes from the OS (/usr/lib/swift).
     set(MELEE_VISION_SDK_NAME "${CMAKE_OSX_SYSROOT}")
@@ -645,10 +645,10 @@ if(MELEE_BUILD_PORT_METAL)
       COMMAND "${MELEE_VISION_SWIFTC}" -parse-as-library -emit-library -static -o "${MELEE_VISION_SWIFT_LIB}"
         -sdk "${MELEE_VISION_SDK}" -target "${MELEE_VISION_TRIPLE}"
         -import-objc-header "${MELEE_VISION_SWIFT_DIR}/bridge.h" -I "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx"
-        "${MELEE_VISION_SWIFT_DIR}/DashdanceVisionApp.swift" "${MELEE_VISION_SWIFT_DIR}/MRScreenRenderer.swift"
-      DEPENDS "${MELEE_VISION_SWIFT_DIR}/DashdanceVisionApp.swift" "${MELEE_VISION_SWIFT_DIR}/MRScreenRenderer.swift"
-        "${MELEE_VISION_SWIFT_DIR}/bridge.h" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/mr_bridge.h"
-      COMMENT "swiftc: the visionOS app (Xelee mode)"
+        "${MELEE_VISION_SWIFT_DIR}/DashdanceVisionApp.swift" "${MELEE_VISION_SWIFT_DIR}/ARScreenRenderer.swift"
+      DEPENDS "${MELEE_VISION_SWIFT_DIR}/DashdanceVisionApp.swift" "${MELEE_VISION_SWIFT_DIR}/ARScreenRenderer.swift"
+        "${MELEE_VISION_SWIFT_DIR}/bridge.h" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/ar_bridge.h"
+      COMMENT "swiftc: the visionOS app (AR Mode)"
       VERBATIM)
     add_custom_target(visionos_swift DEPENDS "${MELEE_VISION_SWIFT_LIB}")
     add_dependencies(melee_port_mac visionos_swift)

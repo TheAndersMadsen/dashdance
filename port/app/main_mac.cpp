@@ -92,7 +92,7 @@ void usage() {
       "  --lossless-inspect       list the tables of a Lossless Adapter in configuration mode (plugged in with its button held)\n"
       "  --lossless-setup         install the Dashdance profile on it (first plugged controller on port 1) and boot PC mode\n"
       "  --script FILE            deterministic input script (replaces physical input)\n"
-      "  --mr                     Xelee mode (visionOS): play on a floating screen in the room after Play\n"
+      "  --ar                     AR Mode (visionOS): play on a floating screen in the room after Play\n"
       "  --frames N               stop after N retraces\n"
       "  --fast                   no real-time pacing\n"
       "  --time-base N            preset guest time base\n"
@@ -197,7 +197,7 @@ int dashdance_main(int argc, char** argv) {
   float overlay_opacity_arg = -1.0f, sharpness_arg = -1.0f;
   int upscaler_arg = -1;
   bool widescreen_arg = false, window_arg = false;
-  bool mr_arg = false;
+  bool ar_arg = false;
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     auto next = [&]() -> const char* { if (i + 1 >= argc) { usage(); std::exit(2); } return argv[++i]; };
@@ -240,7 +240,7 @@ int dashdance_main(int argc, char** argv) {
     else if (a == "--cache-dir") cache_dir = next();
     else if (a == "--log-file") log_file = next();
     else if (a == "--script") script = next();
-    else if (a == "--mr") mr_arg = true;
+    else if (a == "--ar") ar_arg = true;
     else if (a == "--frames") o.frames = (uint32_t)std::strtoul(next(), nullptr, 0);
     else if (a == "--fast") o.fast = true;
     else if (a == "--time-base") { o.time_base = std::strtoull(next(), nullptr, 0); o.time_base_set = true; }
@@ -262,8 +262,8 @@ int dashdance_main(int argc, char** argv) {
     else { usage(); return 2; }
   }
   if (iso_arg.empty()) { if (const char* env = std::getenv("MELEE_ISO")) iso_arg = env; }
-  const bool mr_mode = mr_arg || (std::getenv("MELEE_MR") && *std::getenv("MELEE_MR") && *std::getenv("MELEE_MR") != '0');
-  gfx.mr_mirror = mr_mode;   // only consumed by the Vision Pro immersive renderer
+  const bool ar_mode = ar_arg || (std::getenv("MELEE_AR") && *std::getenv("MELEE_AR") && *std::getenv("MELEE_AR") != '0');
+  gfx.ar_mirror = ar_mode;   // only consumed by the Vision Pro immersive renderer
 
   const fs::path support = fs::path(home_dir()) / "Library/Application Support/Dashdance";
 #if TARGET_OS_VISION
@@ -370,13 +370,13 @@ int dashdance_main(int argc, char** argv) {
     if (ensure_dir(support.string(), "support")) save_launcher_ini(remembered, settings);
   }
 #if TARGET_OS_VISION
-  if (mr_mode) {
-    // Xelee mode: open the mixed-style immersive space now (SwiftUI shows its confirmation on
+  if (ar_mode) {
+    // AR Mode: open the mixed-style immersive space now (SwiftUI shows its confirmation on
     // the free main thread), then start the game on this thread.
     dashdance_vision_request_space();
     const double deadline = host::now_seconds() + 20.0;
     while (!dashdance_vision_space_opened() && host::now_seconds() < deadline) usleep(50 * 1000);
-    host::log("xelee: immersive space %s", dashdance_vision_space_opened() ? "open" : "did not open; continuing on the flat window");
+    host::log("ar mode: immersive space %s", dashdance_vision_space_opened() ? "open" : "did not open; continuing on the flat window");
   }
 #endif
   // Command-line flags win over remembered launcher values.
@@ -447,14 +447,14 @@ int dashdance_main(int argc, char** argv) {
   try {
 #if TARGET_OS_VISION
     // SDL's UIKit window wants the main thread; the game runs on its own thread from here on.
-    __block void* mr_layer = nullptr;
-    __block int mr_client_w = 0, mr_client_h = 0;
+    __block void* ar_layer = nullptr;
+    __block int ar_client_w = 0, ar_client_h = 0;
     dispatch_sync(dispatch_get_main_queue(), ^{
-      mr_layer = host::window_create((int)window_w, (int)window_h, L"Dashdance", !hidden);
-      host::window_client_size(&mr_client_w, &mr_client_h);
+      ar_layer = host::window_create((int)window_w, (int)window_h, L"Dashdance", !hidden);
+      host::window_client_size(&ar_client_w, &ar_client_h);
     });
-    void* layer = mr_layer;
-    int client_w = mr_client_w, client_h = mr_client_h;
+    void* layer = ar_layer;
+    int client_w = ar_client_w, client_h = ar_client_h;
 #else
     void* layer = host::window_create((int)window_w, (int)window_h, L"Dashdance", !hidden);
     int client_w = 0, client_h = 0;
