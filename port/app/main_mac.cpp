@@ -477,7 +477,6 @@ int dashdance_main(int argc, char** argv) {
       // of it. Hide it and let the render thread drain the flat present; the mirror keeps
       // running (it renders regardless of the flat present).
       host::window_set_visible(false);
-      gx::metal_set_skip_present(backend, true);
       host::log("ar mode: the flat window steps aside; the room is the display");
     }
 #endif

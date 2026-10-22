@@ -65,9 +65,16 @@ bool apple_graphics() {
 }
 std::vector<int> main_rows() {
   std::vector<int> v;
+  const bool touch = g_touch_visible[0] || g_touch_visible[1];
   for (int r = 0; r < ROW_MAIN_COUNT; ++r) {
-    if ((r == ROW_TOUCH_OPACITY || r == ROW_TOUCH_SIZE) && !g_touch_visible[0]) continue;
-    if ((r == ROW_FULLSCREEN || r == ROW_VSYNC) && g_touch_visible[0]) continue;   // macOS-only controls
+    if ((r == ROW_TOUCH_OPACITY || r == ROW_TOUCH_SIZE) && !touch) continue;
+    if (r == ROW_FULLSCREEN || r == ROW_VSYNC) {
+#if defined(__APPLE__) && !TARGET_OS_OSX
+      continue;   // window/display sync are managed by the system on iOS and visionOS
+#else
+      if (touch) continue;
+#endif
+    }
     if (r == ROW_UPSCALE && !apple_graphics()) continue;                       // Metal only
     v.push_back(r);
   }
@@ -403,9 +410,11 @@ void menu_overlay(OverlayFrame& out, int ww, int wh, bool touch_controls_visible
   std::lock_guard<std::mutex> lock(g_mutex);
   g_touch_visible[surface] = touch_controls_visible;
   const RuntimeSettings s = g_settings;
-  float unit = std::min(18.0f * std::max(window_pixels_per_point(), 1.0f), std::min(ww, wh) / 22.0f);
+  // The quad's logical size is independent of the EFB resolution and hidden flat window.
+  float unit = surface == 1 ? std::min(ww, wh) / 22.0f :
+      std::min(18.0f * std::max(window_pixels_per_point(), 1.0f), std::min(ww, wh) / 22.0f);
   float safe_t = 0, safe_l = 0, safe_r = 0, safe_b = 0;
-  window_safe_insets(safe_t, safe_l, safe_r, safe_b);   // keep clear of the island, the rounded corners and the home indicator
+  if (surface == 0) window_safe_insets(safe_t, safe_l, safe_r, safe_b);
   // Performance HUD: one line, top-left.
   if (s.hud) {
     GcAdapterStatus adapter; const bool have_adapter = gcadapter_status(adapter);
@@ -447,7 +456,7 @@ void menu_overlay(OverlayFrame& out, int ww, int wh, bool touch_controls_visible
   // when the band would push it off-screen (tiny regions get a centered panel over the curve
   // rather than a clipped one).
   float div[4];
-  if (window_division_region(div)) {
+  if (surface == 0 && window_division_region(div)) {
     const float bx0 = div[0], by0 = div[1], bx1 = div[2], by1 = div[3];
     const float cx1 = x0 + panel_w, cy1 = y0 + panel_h;
     if (cx1 > bx0 && x0 < bx1 && cy1 > by0 && y0 < by1) {

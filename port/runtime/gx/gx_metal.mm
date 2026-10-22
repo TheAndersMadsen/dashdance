@@ -68,9 +68,16 @@ struct Pipeline { id<MTLRenderPipelineState> state = nil; };
 
 // The published AR-Mode mirror (ar_bridge.h). One backend runs at a time; its ring lives here
 // so the Swift renderer can read it through the C ABI while the render thread keeps updating it.
+struct ArFrameLease {
+  id<MTLTexture> game = nil, overlay = nil;
+  id<MTLSharedEvent> done = nil;
+};
 struct ArMirror {
   std::mutex mutex;
   DashdanceArFrame frame{};
+  ArFrameLease published;
+  std::unordered_map<uint64_t, ArFrameLease> leases;
+  uint64_t next_lease = 1;
   bool active = false;
 };
 static ArMirror g_ar_mirror;
@@ -187,6 +194,7 @@ class MetalBackend final : public Backend {
       std::lock_guard<std::mutex> lock(g_ar_mirror.mutex);
       g_ar_mirror.active = false;
       g_ar_mirror.frame = {};
+      g_ar_mirror.published = {};
     }
   }
   void submit_frame(const Frame& frame) override { submit(frame, nullptr); }
@@ -964,41 +972,51 @@ class MetalBackend final : public Backend {
   }
 
   // ---- AR Mode (visionOS): the mirror the immersive quad consumes (ar_bridge.h).
-  // Each presented frame also renders the picture and the in-game menu into ring slot
-  // `frame_counter_ % 3`; a shared event tells the quad the sequence, another paces the game
-  // back when it wants to reuse a slot the quad has not finished reading. All waits are GPU-side:
-  // neither the simulation nor the flat present ever blocks on the headset.
+  // The quad leases a published slot through its GPU completion. The producer skips a busy
+  // reuse slot, so repeated compositor reads and resize cannot race writes, and neither the
+  // simulation nor the flat present waits for the headset.
   void ar_init() {
     ar_done_event_ = [device_ newSharedEvent];
-    ar_read_event_ = [device_ newSharedEvent];
     ar_enabled_ = true;
     std::lock_guard<std::mutex> lock(g_ar_mirror.mutex);
     g_ar_mirror.frame = {};
+    g_ar_mirror.published = {};
     g_ar_mirror.frame.done = (__bridge void*)ar_done_event_;
-    g_ar_mirror.frame.read = (__bridge void*)ar_read_event_;
     g_ar_mirror.active = true;
     host::log("metal: AR mirror on: the picture and in-game menu feed the Vision Pro quad");
   }
 
   void render_mr(const EfbCopy& c) {
     end_pass();   // the flat present normally closed the draw pass; in drain mode it is still open
-    const uint32_t w = std::min<uint32_t>(c.src_w * scale_, efb_w_), h = std::min<uint32_t>(c.src_h * scale_, efb_h_);
+    uint32_t w = std::min<uint32_t>(c.src_w * scale_, efb_w_), h = std::min<uint32_t>(c.src_h * scale_, efb_h_);
     if (!w || !h) return;
-    // Skip only while the quad is more than two published frames behind: the slot it is reading
-    // must not be the slot this frame would write. The check compares against the published
-    // sequence (not the frame counter), so when the quad goes away entirely the game publishes up
-    // to two frames ahead and then holds — and the moment the quad consumes again, everything
-    // resumes. No consumer, no headset, no deadlock either way.
-    if (ar_sequence_ > 0 && ar_read_event_.signaledValue + 2 < ar_sequence_) return;
+    // AR skips the flat present, so it also owns the requested MetalFX pass. Use the same
+    // aspect-fitted target as Auto scale; otherwise Auto would halve the EFB with no upscale.
+    const float aspect = output_aspect();
+    float target_w = (float)std::max(client_w_, 1), target_h = target_w / aspect;
+    if (target_h > (float)std::max(client_h_, 1)) {
+      target_h = (float)std::max(client_h_, 1);
+      target_w = target_h * aspect;
+    }
+    fx_presented_ = fx_present(c, host::GameRect{0, 0, target_w, target_h});
+    if (fx_presented_) { w = fx_out_w_; h = fx_out_h_; }
+    // Melee's EFB has non-square display pixels, especially with the widescreen patch. Lay
+    // controls out in the displayed aspect so circles and labels remain undistorted on the quad.
+    const int overlay_w = std::max(1, (int)std::lround((float)h * output_aspect()));
     const int slot = (int)((ar_sequence_ + 1) % FRAME_SLOTS);   // this publish's slot
-    if ((int)w != ar_w_ || (int)h != ar_h_) {   // picture size changed (widescreen, scale caps): rebuild the ring,
-      for (int i = 0; i < FRAME_SLOTS; ++i) {   // keeping the old textures one rebuild long for the quad's in-flight reads
-        if (ar_game_[i]) { ar_retire_.push_back(ar_game_[i]); ar_retire_.push_back(ar_overlay_[i]); ar_game_[i] = nil; ar_overlay_[i] = nil; }
-      }
-      ar_retire_.erase(ar_retire_.begin(), ar_retire_.size() > 12 ? ar_retire_.begin() + (ar_retire_.size() - 12) : ar_retire_.begin());
+    if ((int)w != ar_w_ || (int)h != ar_h_) {
+      // Published and leased textures retain the old ring until its last reader is done.
+      for (int i = 0; i < FRAME_SLOTS; ++i) { ar_game_[i] = nil; ar_overlay_[i] = nil; }
       ar_w_ = (int)w; ar_h_ = (int)h;
-      host::ar_touch_resize((int)w, (int)h);   // the quad's touch controls lay out at the ring size
-      host::log("metal: AR mirror ring is now %ux%u", w, h);
+      host::ar_touch_resize(overlay_w, (int)h);
+      host::log("metal: AR mirror ring is now %ux%u%s", w, h, fx_presented_ ? " (MetalFX)" : "");
+    }
+    {
+      std::lock_guard<std::mutex> lock(g_ar_mirror.mutex);
+      for (const auto& entry : g_ar_mirror.leases)
+        if (entry.second.game == ar_game_[slot] && ar_game_[slot]) return;
+      // New acquisitions can only pin the currently published slot, which is different from
+      // this next slot. No reservation is needed after this check while encoding the frame.
     }
     if (!ar_game_[slot]) {
       MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
@@ -1011,12 +1029,9 @@ class MetalBackend final : public Backend {
       ar_overlay_[slot] = [device_ newTextureWithDescriptor:td2];
     }
     ++ar_sequence_;   // this publish's sequence; the quad reads slot sequence % FRAME_SLOTS
-    // GPU-side: the quad must have finished reading this slot's previous user (three publishes ago).
-    const uint64_t wait_value = ar_sequence_ > FRAME_SLOTS ? ar_sequence_ - FRAME_SLOTS : 0;
-    [command_ encodeWaitForEvent:ar_read_event_ value:wait_value];
     // The picture: the same blit the flat window gets (MetalFX output when it ran).
     BlitConstants bc{{(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT},
-                     {1.0f / std::max((float)efb_w_, 1.0f), 1.0f / std::max((float)efb_h_, 1.0f), 0.0f, 0.0f},
+                     {1.0f / std::max((float)efb_w_, 1.0f), 1.0f / std::max((float)efb_h_, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), 0.0f},
                      {1, 1, 0, 0}};
     id<MTLTexture> source = efb_color_;
     if (fx_presented_ && fx_out_) {
@@ -1041,7 +1056,7 @@ class MetalBackend final : public Backend {
     // so the menu's shapes land relative to the game content.
     ar_overlay_frame_.shapes.clear();
     ar_overlay_frame_.texts.clear();
-    host::game_overlay_ar(ar_overlay_frame_, (int)w, (int)h);
+    host::game_overlay_ar(ar_overlay_frame_, overlay_w, (int)h);
     MTLRenderPassDescriptor* rp2 = [MTLRenderPassDescriptor renderPassDescriptor];
     rp2.colorAttachments[0].texture = ar_overlay_[slot];
     rp2.colorAttachments[0].loadAction = MTLLoadActionClear;
@@ -1049,8 +1064,8 @@ class MetalBackend final : public Backend {
     rp2.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> enc2 = [command_ renderCommandEncoderWithDescriptor:rp2];
     [enc2 setViewport:MTLViewport{0, 0, (double)w, (double)h, 0, 1}];
-    draw_shapes(enc2, (float)w, (float)h, ar_overlay_frame_);
-    draw_texts(enc2, (float)w, (float)h, ar_overlay_frame_);
+    draw_shapes(enc2, (float)overlay_w, (float)h, ar_overlay_frame_);
+    draw_texts(enc2, (float)overlay_w, (float)h, ar_overlay_frame_);
     [enc2 endEncoding];
     // GPU-side: the quad waits for this before sampling the slot.
     [command_ encodeSignalEvent:ar_done_event_ value:ar_sequence_];
@@ -1059,11 +1074,12 @@ class MetalBackend final : public Backend {
       DashdanceArFrame& f = g_ar_mirror.frame;
       f.sequence = ar_sequence_;
       f.width = (int32_t)w; f.height = (int32_t)h;
-      f.aspect = (float)c.src_w / (float)c.src_h;
+      f.aspect = output_aspect();
       for (int i = 0; i < FRAME_SLOTS; ++i) {
         f.game[i] = (__bridge void*)ar_game_[i];
         f.overlay[i] = (__bridge void*)ar_overlay_[i];
       }
+      g_ar_mirror.published = {ar_game_[slot], ar_overlay_[slot], ar_done_event_};
     }
   }
 
@@ -1289,11 +1305,15 @@ class MetalBackend final : public Backend {
         } else {
           const EfbCopy& c = frame.copies[cmd.index];
           if (c.to_xfb) {
-            if (!skip_present_ && present_efb(c)) presented = true;
+            bool immersive = false;
+#if TARGET_OS_VISION
+            immersive = ar_enabled_ && dashdance_vision_space_opened();
+#endif
+            if (!skip_present_ && !immersive && present_efb(c)) presented = true;
             // The Vision Pro quad mirrors what was presented — and when the flat window is
             // occluded by the immersive space the quad is the primary display, so the mirror
             // renders even while the flat present is being drained.
-            if (ar_enabled_) render_mr(c);
+            if (immersive) render_mr(c);
             // Snapshot the presented EFB before the game's clear erases it:
             // encoding this after the loop reads the cleared EFB (all-black
             // captures). The blit joins this frame's command buffer, so it
@@ -1433,8 +1453,7 @@ class MetalBackend final : public Backend {
   // AR Mode (visionOS): the mirror ring the immersive quad samples (see ar_bridge.h).
   bool ar_enabled_ = false;
   id<MTLTexture> ar_game_[3] = {nil, nil, nil}, ar_overlay_[3] = {nil, nil, nil};
-  std::vector<id<MTLTexture>> ar_retire_;   // replaced ring textures, kept one rebuild long
-  id<MTLSharedEvent> ar_done_event_ = nil, ar_read_event_ = nil;
+  id<MTLSharedEvent> ar_done_event_ = nil;
   int ar_w_ = 0, ar_h_ = 0;
   uint64_t ar_sequence_ = 0;
   host::OverlayFrame ar_overlay_frame_;
@@ -1610,9 +1629,19 @@ static MetalThreaded* threaded(Backend* b) { std::lock_guard<std::mutex> lock(g_
 }  // namespace
 
 bool gx::metal_ar_snapshot(DashdanceArFrame* out) {
+  if (!out) return false;
   std::lock_guard<std::mutex> lock(g_ar_mirror.mutex);
+  *out = {};
+  if (!g_ar_mirror.active || !g_ar_mirror.frame.sequence) return false;
   *out = g_ar_mirror.frame;
-  return g_ar_mirror.active;
+  out->lease = g_ar_mirror.next_lease++;
+  g_ar_mirror.leases.emplace(out->lease, g_ar_mirror.published);
+  return true;
+}
+
+void gx::metal_ar_release_frame(uint64_t lease) {
+  std::lock_guard<std::mutex> lock(g_ar_mirror.mutex);
+  g_ar_mirror.leases.erase(lease);
 }
 
 Backend* create_metal_backend(void* layer, int w, int h, const MetalOptions& options) {
@@ -1640,5 +1669,6 @@ int dashdance_ar_active(void) {
 }
 
 int dashdance_ar_snapshot(DashdanceArFrame* out) { return gx::metal_ar_snapshot(out) ? 1 : 0; }
+void dashdance_ar_release_frame(uint64_t lease) { gx::metal_ar_release_frame(lease); }
 
 void dashdance_ar_touch(int64_t finger, int phase, float u, float v) { host::ar_touch_event(finger, phase, u, v); }

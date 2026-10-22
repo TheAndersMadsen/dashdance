@@ -213,11 +213,17 @@ void touch_reevaluate() {
 }
 void touch_event(const SDL_TouchFingerEvent& e) {
   if (SDL_GetTouchDeviceType(e.touchID) != SDL_TOUCH_DEVICE_DIRECT) return;   // trackpads are not touch screens
-  std::lock_guard<std::mutex> lock(g_touch_mutex);
+  std::unique_lock<std::mutex> lock(g_touch_mutex);
   g_touch_seen = true;
   touch_layout();
   const float px = e.x * (float)g_client_w, py = e.y * (float)g_client_h;
-  if (e.type == SDL_EVENT_FINGER_DOWN && menu_touch(px, py)) return;   // the menu (or its button) took the tap
+  if (e.type == SDL_EVENT_FINGER_DOWN) {
+    // Menu settings can call touch_set_opacity/scale, which take this same mutex.
+    lock.unlock();
+    if (menu_touch(px, py)) return;
+    lock.lock();
+    touch_layout();
+  }
   if (e.type == SDL_EVENT_FINGER_DOWN) {
     g_fingers.push_back({e.fingerID, px, py});
     // A finger that lands on a stick owns it until it lifts, even when it wanders off.
@@ -274,7 +280,6 @@ bool touch_overlay(OverlayFrame& out) {
 }
 void touch_set_opacity(float opacity) { std::lock_guard<std::mutex> lock(g_touch_mutex); g_touch_opacity = std::clamp(opacity, 0.0f, 1.0f); }
 void touch_force_visible(bool visible) { std::lock_guard<std::mutex> lock(g_touch_mutex); g_touch_forced = visible; }
-void touch_set_scale(float scale) { std::lock_guard<std::mutex> lock(g_touch_mutex); g_touch_scale = std::clamp(scale, 0.7f, 1.4f); g_touch.w = 0; }
 void touch_set_game_aspect(float aspect) { std::lock_guard<std::mutex> lock(g_touch_mutex); g_touch_aspect = aspect > 0.0f ? aspect : 4.0f / 3.0f; g_touch.w = 0; }
 
 // ---- AR Mode (visionOS): the Vision Pro quad as a second touch surface. Its "window" is the
@@ -286,10 +291,16 @@ struct ArTouch {
   TouchLayout layout;
   std::vector<Finger> fingers;
   bool seen = false;             // the quad has been tapped at least once
-  int w = 0, h = 0;              // the ring size, published by the renderer each mirror resize
+  int w = 0, h = 0;              // display-proportioned coordinates, published on mirror resize
   float alpha = 0.0f;
 };
 ArTouch g_ar;
+
+void touch_set_scale(float scale) {
+  std::lock_guard<std::mutex> lock(g_touch_mutex);
+  g_touch_scale = std::clamp(scale, 0.7f, 1.4f);
+  g_touch.w = g_ar.layout.w = 0;
+}
 
 void draw_touch_controls(const TouchLayout& t, float alpha, OverlayFrame& out) {
   // VirtualFriend's palette on a dark background: buttons white 0.4 at 50%, touched white 0.6 at 50%.
@@ -315,9 +326,10 @@ void ar_touch_layout() {
   if (t.w == g_ar.w && t.h == g_ar.h && !t.buttons.empty()) return;
   t.w = g_ar.w; t.h = g_ar.h; t.pt = 1.0f;
   t.buttons.clear();
-  // Landscape columns over the picture's edges, scaled to the ring (the picture fills the ring).
+  // Landscape columns over the picture's edges in the displayed aspect's coordinates.
   const float W = (float)t.w, H = (float)t.h, pad = H * 0.02f;
-  const float col_h = H * 0.62f, col_w = std::min(col_h * 0.46f, W * 0.16f);
+  const float col_h = H * 0.62f * g_touch_scale;
+  const float col_w = std::min(col_h * 0.46f, W * 0.16f * g_touch_scale);
   const float trig_h = col_h * 0.13f, mid = std::min(col_w, col_h * 0.60f), row_h = col_h * 0.27f;
   const float gap = W * 0.008f, btn_d = std::max(std::min(row_h, col_w * 0.42f), 8.0f);
   const float y_base = (H - col_h) * 0.5f;
@@ -362,17 +374,22 @@ void ar_touch_resize(int w, int h) {
   if (w == g_ar.w && h == g_ar.h) return;
   g_ar.w = std::max(w, 1); g_ar.h = std::max(h, 1);
   g_ar.seen = true;   // the space is open: the quad is a touch surface from the start
-  g_ar.layout.w = 0;   // lay the controls out again at the new ring size
+  g_ar.layout.w = 0;   // lay the controls out again at the new coordinate size
+  g_ar.fingers.clear();
+  g_ar.layout.stick.owned = g_ar.layout.stick.active = g_ar.layout.cstick.owned = g_ar.layout.cstick.active = false;
 }
 
 void ar_touch_event(int64_t finger, int phase, float u, float v) {   // phase 0 down, 1 move, 2 up; u,v across the picture, v = 0 at the top
-  std::lock_guard<std::mutex> lock(g_touch_mutex);
+  std::unique_lock<std::mutex> lock(g_touch_mutex);
   if (phase == 0) g_ar.seen = true;
   if (g_ar.w <= 0 || g_ar.h <= 0) { g_ar.fingers.clear(); return; }
   ar_touch_layout();
   const float px = std::clamp(u, 0.0f, 1.0f) * (float)g_ar.w, py = std::clamp(v, 0.0f, 1.0f) * (float)g_ar.h;
   if (phase == 0) {
-    if (menu_touch(px, py, 1)) return;   // the menu (or its AR MENU button) took the tap
+    lock.unlock();
+    if (menu_touch(px, py, 1)) return;   // its settings callbacks may take g_touch_mutex
+    lock.lock();
+    ar_touch_layout();
     g_ar.fingers.push_back({(SDL_FingerID)finger, px, py});
     for (TouchStick* st : {&g_ar.layout.stick, &g_ar.layout.cstick})
       if (!st->owned && st->rect.contains(px, py)) { st->finger = (SDL_FingerID)finger; st->owned = true; break; }
@@ -428,7 +445,7 @@ void game_overlay_ar(OverlayFrame& out, int ww, int wh) {
   const bool touch = ar_touch_overlay(out);   // clears shapes, sets alpha to the quad's touch fade
   for (OverlayShape& s : out.shapes) s.a *= out.alpha;
   out.alpha = 1.0f;
-  menu_overlay(out, ww, wh, touch, 1);   // menu and HUD at the ring size; hit-tested there too
+  menu_overlay(out, ww, wh, touch, 1);   // menu/HUD use the same display coordinates as touch hits
 }
 
 namespace {

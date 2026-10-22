@@ -9,24 +9,26 @@
 extern "C" {
 #endif
 
-// The mirror the Metal renderer publishes for the Vision Pro quad. Three slot textures; the
-// quad's frame loop picks the newest finished sequence and waits on `done` on the GPU.
-// `read` is the reverse direction: the quad pass signals the sequence it consumed, and the game
-// waits for it before re-rendering into a slot (the standard triple-buffer handshake, GPU-side).
+// The mirror the Metal renderer publishes for the Vision Pro quad. Acquiring a snapshot pins
+// its newest slot until dashdance_ar_release_frame, including repeated reads of that sequence.
+// The consumer waits on `done` on the GPU, then releases the lease after its GPU work completes.
+// The producer skips a pinned slot instead of waiting for the headset.
 typedef struct DashdanceArFrame {
-  uint64_t sequence;        // newest finished frame; slot k holds sequence s where (s - 1) % 3 == k
+  uint64_t sequence;        // newest encoded frame; its slot is sequence % 3
+  uint64_t lease;           // acquired ownership; release exactly once after the last GPU read
   int32_t width, height;    // slot texture size in pixels (the game picture, no letterbox)
-  void* game[3];            // id<MTLTexture> BGRA8Unorm, sRGB bytes
-  void* overlay[3];         // id<MTLTexture> RGBA8Unorm premultiplied (in-game menu / HUD)
+  void* game[3];            // id<MTLTexture> BGRA8Unorm, sRGB bytes; only the newest slot is leased
+  void* overlay[3];         // id<MTLTexture> BGRA8Unorm premultiplied (in-game menu / HUD)
   void* done;               // id<MTLSharedEvent>, notified with `sequence` per finished frame
-  void* read;               // id<MTLSharedEvent>, waited with (sequence - 3) by the game
-  float aspect;             // picture aspect (width / height)
+  float aspect;             // displayed picture aspect (4:3 or 16:9, independent of texture size)
 } DashdanceArFrame;
 
 // 1 when the game's Metal renderer is running with the mirror on.
 int dashdance_ar_active(void);
-// Thread-safe copy into *out; returns 0 (and zeroes *out) when the mirror is not running.
+// Thread-safe acquisition into *out; returns 0 (and zeroes *out) when no frame is available.
+// Early exits before submitting GPU work must also release the acquired lease.
 int dashdance_ar_snapshot(DashdanceArFrame* out);
+void dashdance_ar_release_frame(uint64_t lease);
 
 // visionOS app flow (Swift @main drives it; stubs elsewhere). Swift registers the two hooks at
 // startup; the game flow requests the immersive space after Play and waits for it to open.

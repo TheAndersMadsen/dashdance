@@ -103,3 +103,16 @@ created main scene, and guard game startup with `call_once`. Window visibility, 
 idle-timer cleanup now run on main. A 2400-retrace Training run completed cleanup without the
 previous `BSServiceMainRunLoopQueue` assertion; its scene-expectation failure was traced to a
 separate disabled trace option. Real close/reopen and Digital Crown interruptions remain unverified.
+
+## Vision Pro floating-screen presentation — 2026-10-22
+
+The original mirror reused textures without safe ownership for repeated compositor reads,
+used the EFB pixel ratio for screen shape, and had incomplete sampler, per-eye depth and
+foveation setup. Use per-acquisition leases and the producer event, skip busy mirror slots,
+render the correct eye/slice with reverse-Z depth, and composite display colors before the
+linear compositor output. The picture and controls now follow the chosen display aspect.
+AR runs MetalFX independently of the hidden flat window and honors sharpening. Touch/menu
+callbacks release their mutex before settings callbacks; scale changes update both surfaces.
+Selection rays, cancellation and placement bookkeeping were corrected in the Swift renderer.
+Live 4:3 Training was seen in the room with no Metal validation error; gesture, stereo headset,
+recenter and cross-launch anchor behavior are not verified. See `AR_MODE.md` for evidence and limits.

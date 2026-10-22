@@ -36,9 +36,10 @@ void metal_set_options(Backend* backend, const MetalOptions& options);
 // AR Mode (visionOS): stop presenting to the flat window (hidden while the immersive space is
 // open) without touching the mirror — the quad is the primary display then.
 void metal_set_skip_present(Backend* backend, bool skip);
-// AR Mode (visionOS): copy of the published mirror for the immersive quad; false when the
-// backend is not running with MetalOptions::ar_mirror.
+// AR Mode (visionOS): acquire the published mirror for the immersive quad; false when no
+// frame is available. Release its lease after GPU reads complete (see ar_bridge.h).
 bool metal_ar_snapshot(DashdanceArFrame* out);
+void metal_ar_release_frame(uint64_t lease);
 // Caps on the internal-resolution multiplier, applied to both auto and explicit scales and re-evaluated
 // every frame: `device_cap` for the device class (phones: 2), `thermal_cap` from the thermal state
 // (serious: 2, critical: 1). 0 = no cap.
