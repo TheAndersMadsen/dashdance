@@ -182,10 +182,10 @@ bool physical_gamepad_connected() {
 }
 bool touch_controls_visible() { return (g_touch_seen || g_touch_forced) && !physical_gamepad_connected() && g_touch_opacity > 0.0f; }
 
-void stick_update(TouchStick& st) {
+void stick_update_on(TouchStick& st, const std::vector<Finger>& fingers) {
   st.active = false;
   if (!st.owned) return;
-  for (const Finger& f : g_fingers) {
+  for (const Finger& f : fingers) {
     if (f.id != st.finger) continue;
     const float cx = (st.rect.x0 + st.rect.x1) * 0.5f, cy = (st.rect.y0 + st.rect.y1) * 0.5f;
     const float lim = std::max(st.radius * 0.72f, 1.0f);   // full deflection well inside the track
@@ -195,6 +195,7 @@ void stick_update(TouchStick& st) {
     st.dx = dx / lim; st.dy = dy / lim; st.active = true;
   }
 }
+void stick_update(TouchStick& st) { stick_update_on(st, g_fingers); }
 void touch_reevaluate() {
   touch_layout();
   for (TouchButton& b : g_touch.buttons) {
@@ -203,8 +204,8 @@ void touch_reevaluate() {
     if (pressed && !b.pressed) haptic_tap(b.button == GC_A);
     b.pressed = pressed;
   }
-  stick_update(g_touch.stick);
-  stick_update(g_touch.cstick);
+  stick_update_on(g_touch.stick, g_fingers);
+  stick_update_on(g_touch.cstick, g_fingers);
 }
 void touch_event(const SDL_TouchFingerEvent& e) {
   if (SDL_GetTouchDeviceType(e.touchID) != SDL_TOUCH_DEVICE_DIRECT) return;   // trackpads are not touch screens
@@ -254,6 +255,8 @@ void read_touch(PadState& p) {
 }
 }  // namespace
 
+void draw_touch_controls(const TouchLayout& t, float alpha, OverlayFrame& out);
+
 bool touch_overlay(OverlayFrame& out) {
   std::lock_guard<std::mutex> lock(g_touch_mutex);
   const float target = touch_controls_visible() ? g_touch_opacity : 0.0f;
@@ -262,15 +265,38 @@ bool touch_overlay(OverlayFrame& out) {
   out.alpha = g_touch_alpha;
   if (g_touch_alpha <= 0.001f) return false;
   touch_layout();
+  draw_touch_controls(g_touch, g_touch_alpha, out);
+  return true;
+}
+void touch_set_opacity(float opacity) { std::lock_guard<std::mutex> lock(g_touch_mutex); g_touch_opacity = std::clamp(opacity, 0.0f, 1.0f); }
+void touch_force_visible(bool visible) { std::lock_guard<std::mutex> lock(g_touch_mutex); g_touch_forced = visible; }
+void touch_set_scale(float scale) { std::lock_guard<std::mutex> lock(g_touch_mutex); g_touch_scale = std::clamp(scale, 0.7f, 1.4f); g_touch.w = 0; }
+void touch_set_game_aspect(float aspect) { std::lock_guard<std::mutex> lock(g_touch_mutex); g_touch_aspect = aspect > 0.0f ? aspect : 4.0f / 3.0f; g_touch.w = 0; }
+
+// ---- AR Mode (visionOS): the Vision Pro quad as a second touch surface. Its "window" is the
+// game picture itself, so the controls render over the picture's edges and a pinch there plays:
+// the quad's spatial events arrive through ar_bridge.h, hit-test against this layout, and read
+// through to port 1 exactly like the flat window's touch screen. A physical gamepad takes over,
+// same as on the flat window.
+struct ArTouch {
+  TouchLayout layout;
+  std::vector<Finger> fingers;
+  bool seen = false;             // the quad has been tapped at least once
+  int w = 0, h = 0;              // the ring size, published by the renderer each mirror resize
+  float alpha = 0.0f;
+};
+ArTouch g_ar;
+
+void draw_touch_controls(const TouchLayout& t, float alpha, OverlayFrame& out) {
   // VirtualFriend's palette on a dark background: buttons white 0.4 at 50%, touched white 0.6 at 50%.
-  const float base = 0.40f, touched = 0.60f, alpha = 0.50f;
-  for (const TouchButton& b : g_touch.buttons) {
+  const float base = 0.40f, touched = 0.60f;
+  for (const TouchButton& b : t.buttons) {
     const float shade = b.pressed ? touched : base;
     const float h = b.rect.y1 - b.rect.y0, w = b.rect.x1 - b.rect.x0;
     const float label_h = b.capsule ? h * 0.62f : h * 0.34f;
     out.shapes.push_back({b.rect.x0, b.rect.y0, b.rect.x1, b.rect.y1, shade, shade, shade, alpha, b.capsule ? h * 0.5f : w * 0.5f, 0.0f, b.pressed ? 1.0f : 0.0f, b.label, w * 0.8f, label_h});
   }
-  for (const TouchStick* st : {&g_touch.stick, &g_touch.cstick}) {
+  for (const TouchStick* st : {&t.stick, &t.cstick}) {
     const float cx = (st->rect.x0 + st->rect.x1) * 0.5f, cy = (st->rect.y0 + st->rect.y1) * 0.5f;
     out.shapes.push_back({st->rect.x0, st->rect.y0, st->rect.x1, st->rect.y1, base, base, base, alpha, st->radius, 0.0f, 0.0f, (uint32_t)LB_NONE, 0.0f, 0.0f});
     const float kr = st->radius * (st->c ? 0.42f : 0.36f), lim = st->radius * 0.72f;
@@ -278,12 +304,128 @@ bool touch_overlay(OverlayFrame& out) {
     const float shade = st->active ? touched + 0.15f : touched;
     out.shapes.push_back({kx - kr, ky - kr, kx + kr, ky + kr, shade, shade, shade, alpha + 0.2f, kr, 0.0f, st->active ? 1.0f : 0.0f, st->c ? (uint32_t)LB_C : (uint32_t)LB_NONE, kr * 1.2f, kr * 0.9f});
   }
+}
+
+void ar_touch_layout() {
+  TouchLayout& t = g_ar.layout;
+  if (t.w == g_ar.w && t.h == g_ar.h && !t.buttons.empty()) return;
+  t.w = g_ar.w; t.h = g_ar.h; t.pt = 1.0f;
+  t.buttons.clear();
+  // Landscape columns over the picture's edges, scaled to the ring (the picture fills the ring).
+  const float W = (float)t.w, H = (float)t.h, pad = H * 0.02f;
+  const float col_h = H * 0.62f, col_w = std::min(col_h * 0.46f, W * 0.16f);
+  const float trig_h = col_h * 0.13f, mid = std::min(col_w, col_h * 0.60f), row_h = col_h * 0.27f;
+  const float gap = W * 0.008f, btn_d = std::max(std::min(row_h, col_w * 0.42f), 8.0f);
+  const float y_base = (H - col_h) * 0.5f;
+  auto column = [&](float x0, bool left) {
+    const float cx = x0 + col_w * 0.5f;
+    const float y_trig = y_base + pad, y_mid = y_trig + trig_h + gap, y_row = y_trig + trig_h + col_h * 0.60f + (row_h - btn_d) * 0.5f;
+    const float mid_d = std::max(mid - 2 * gap, 24.0f);
+    if (left) {
+      t.buttons.push_back({GC_L, true, false, LB_L, {x0, y_trig, x0 + col_w, y_trig + trig_h}, true, false});
+      t.stick.rect = circle(cx, y_mid + mid_d * 0.5f, mid_d * 0.5f); t.stick.radius = mid_d * 0.5f; t.stick.c = false;
+      t.buttons.push_back({GC_START, false, false, LB_START, circle(x0 + btn_d * 0.5f, y_row + btn_d * 0.5f, btn_d * 0.5f), false, false});
+      t.buttons.push_back({GC_UP, false, false, LB_TAUNT, circle(x0 + col_w - btn_d * 0.5f, y_row + btn_d * 0.5f, btn_d * 0.5f), false, false});
+    } else {
+      t.buttons.push_back({GC_R, false, true, LB_R, {x0, y_trig, x0 + col_w, y_trig + trig_h}, true, false});
+      // GameCube face cluster inside the middle square: big A, B low-left, X right, Y above.
+      const float sx = cx - mid_d * 0.5f, sy = y_mid;
+      t.buttons.push_back({GC_A, false, false, LB_A, circle(sx + mid_d * 0.56f, sy + mid_d * 0.62f, mid_d * 0.25f), false, false});
+      t.buttons.push_back({GC_B, false, false, LB_B, circle(sx + mid_d * 0.15f, sy + mid_d * 0.82f, mid_d * 0.14f), false, false});
+      t.buttons.push_back({GC_X, false, false, LB_X, circle(sx + mid_d * 0.88f, sy + mid_d * 0.34f, mid_d * 0.14f), false, false});
+      t.buttons.push_back({GC_Y, false, false, LB_Y, circle(sx + mid_d * 0.44f, sy + mid_d * 0.14f, mid_d * 0.14f), false, false});
+      t.buttons.push_back({GC_Z, false, false, LB_Z, circle(x0 + btn_d * 0.5f, y_row + btn_d * 0.5f, btn_d * 0.5f), false, false});
+      t.cstick.rect = circle(x0 + col_w - btn_d * 0.5f, y_row + btn_d * 0.5f, btn_d * 0.5f); t.cstick.radius = btn_d * 0.5f; t.cstick.c = true;
+    }
+  };
+  column(pad, true);
+  column(W - pad - col_w, false);
+}
+
+void ar_touch_reevaluate() {
+  ar_touch_layout();
+  for (TouchButton& b : g_ar.layout.buttons) {
+    bool pressed = false;
+    for (const Finger& f : g_ar.fingers) if (b.hit(f.x, f.y)) pressed = true;
+    b.pressed = pressed;
+  }
+  stick_update_on(g_ar.layout.stick, g_ar.fingers);
+  stick_update_on(g_ar.layout.cstick, g_ar.fingers);
+}
+
+void ar_touch_resize(int w, int h) {
+  std::lock_guard<std::mutex> lock(g_touch_mutex);
+  if (w == g_ar.w && h == g_ar.h) return;
+  g_ar.w = std::max(w, 1); g_ar.h = std::max(h, 1);
+  g_ar.seen = true;   // the space is open: the quad is a touch surface from the start
+  g_ar.layout.w = 0;   // lay the controls out again at the new ring size
+}
+
+void ar_touch_event(int64_t finger, int phase, float u, float v) {   // phase 0 down, 1 move, 2 up; u,v across the picture, v = 0 at the top
+  std::lock_guard<std::mutex> lock(g_touch_mutex);
+  if (phase == 0) g_ar.seen = true;
+  if (g_ar.w <= 0 || g_ar.h <= 0) { g_ar.fingers.clear(); return; }
+  ar_touch_layout();
+  const float px = std::clamp(u, 0.0f, 1.0f) * (float)g_ar.w, py = std::clamp(v, 0.0f, 1.0f) * (float)g_ar.h;
+  if (phase == 0) {
+    if (menu_touch(px, py, 1)) return;   // the menu (or its AR MENU button) took the tap
+    g_ar.fingers.push_back({(SDL_FingerID)finger, px, py});
+    for (TouchStick* st : {&g_ar.layout.stick, &g_ar.layout.cstick})
+      if (!st->owned && st->rect.contains(px, py)) { st->finger = (SDL_FingerID)finger; st->owned = true; break; }
+  } else if (phase == 1) {
+    for (Finger& f : g_ar.fingers) if (f.id == (SDL_FingerID)finger) { f.x = px; f.y = py; }
+  } else {
+    for (auto it = g_ar.fingers.begin(); it != g_ar.fingers.end();) { if (it->id == (SDL_FingerID)finger) it = g_ar.fingers.erase(it); else ++it; }
+    for (TouchStick* st : {&g_ar.layout.stick, &g_ar.layout.cstick}) if (st->owned && st->finger == (SDL_FingerID)finger) st->owned = false;
+  }
+  ar_touch_reevaluate();
+}
+
+bool ar_touch_overlay(OverlayFrame& out) {
+  std::lock_guard<std::mutex> lock(g_touch_mutex);
+  const float target = (g_ar.seen || g_touch_forced) && !physical_gamepad_connected() ? g_touch_opacity : 0.0f;
+  g_ar.alpha += std::clamp(target - g_ar.alpha, -0.08f, 0.08f);
+  out.shapes.clear();
+  out.alpha = g_ar.alpha;
+  if (g_ar.alpha <= 0.001f) return false;
+  ar_touch_layout();
+  draw_touch_controls(g_ar.layout, g_ar.alpha, out);
   return true;
 }
-void touch_set_opacity(float opacity) { std::lock_guard<std::mutex> lock(g_touch_mutex); g_touch_opacity = std::clamp(opacity, 0.0f, 1.0f); }
-void touch_force_visible(bool visible) { std::lock_guard<std::mutex> lock(g_touch_mutex); g_touch_forced = visible; }
-void touch_set_scale(float scale) { std::lock_guard<std::mutex> lock(g_touch_mutex); g_touch_scale = std::clamp(scale, 0.7f, 1.4f); g_touch.w = 0; }
-void touch_set_game_aspect(float aspect) { std::lock_guard<std::mutex> lock(g_touch_mutex); g_touch_aspect = aspect > 0.0f ? aspect : 4.0f / 3.0f; g_touch.w = 0; }
+
+void ar_read_touch(PadState& p) {
+  std::lock_guard<std::mutex> lock(g_touch_mutex);
+  if (!g_ar.seen) return;
+  if (physical_gamepad_connected()) {   // a gamepad took over: drop any latched quad touches
+    g_ar.fingers.clear();
+    g_ar.layout.stick.owned = g_ar.layout.stick.active = g_ar.layout.cstick.owned = g_ar.layout.cstick.active = false;
+    for (TouchButton& b : g_ar.layout.buttons) b.pressed = false;
+    return;
+  }
+  p.err = 0;
+  if (g_ar.layout.stick.active) {
+    p.stick_x = (int8_t)std::clamp((int)std::lround(g_ar.layout.stick.dx * 127.0f), -127, 127);
+    p.stick_y = (int8_t)std::clamp((int)std::lround(-g_ar.layout.stick.dy * 127.0f), -127, 127);
+  }
+  if (g_ar.layout.cstick.active) {
+    p.sub_x = (int8_t)std::clamp((int)std::lround(g_ar.layout.cstick.dx * 127.0f), -127, 127);
+    p.sub_y = (int8_t)std::clamp((int)std::lround(-g_ar.layout.cstick.dy * 127.0f), -127, 127);
+  }
+  for (const TouchButton& b : g_ar.layout.buttons) {
+    if (!b.pressed) continue;
+    p.button |= b.button;
+    if (b.trigger_l) p.trig_l = 255;
+    if (b.trigger_r) p.trig_r = 255;
+  }
+}
+
+void game_overlay_ar(OverlayFrame& out, int ww, int wh) {
+  out.texts.clear();
+  const bool touch = ar_touch_overlay(out);   // clears shapes, sets alpha to the quad's touch fade
+  for (OverlayShape& s : out.shapes) s.a *= out.alpha;
+  out.alpha = 1.0f;
+  menu_overlay(out, ww, wh, touch, 1);   // menu and HUD at the ring size; hit-tested there too
+}
 
 namespace {
 std::string narrow(const wchar_t* text) {
@@ -754,7 +896,7 @@ void input_poll(PadState out[4]) {
     if (port >= 4) break;
     taken[port] = true; read_gamepad(pad, out[port]); g_gamepad_port[port] = SDL_GetGamepadID(pad); ++port;
   }
-  if (!(adapter_mask & 1u)) { out[0].err = 0; read_keyboard(out[0]); read_touch(out[0]); }
+  if (!(adapter_mask & 1u)) { out[0].err = 0; read_keyboard(out[0]); read_touch(out[0]); ar_read_touch(out[0]); }
 }
 
 // The letterbox is never bare black: Melee's menu grid continues around the picture, faintly, the way Apple asks games to
@@ -797,11 +939,5 @@ bool game_overlay(OverlayFrame& out) {
   out.shapes.insert(out.shapes.begin(), art.begin(), art.end());   // under the touch controls
   menu_overlay(out, w, h, touch);
   return !out.shapes.empty() || !out.texts.empty();
-}
-void game_overlay_menu_only(OverlayFrame& out, int ww, int wh) {
-  out.shapes.clear();
-  out.texts.clear();
-  out.alpha = 1.0f;
-  menu_overlay(out, ww, wh, false);
 }
 }  // namespace host

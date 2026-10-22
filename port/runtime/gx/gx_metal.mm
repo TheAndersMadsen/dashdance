@@ -997,6 +997,7 @@ class MetalBackend final : public Backend {
       }
       ar_retire_.erase(ar_retire_.begin(), ar_retire_.size() > 12 ? ar_retire_.begin() + (ar_retire_.size() - 12) : ar_retire_.begin());
       ar_w_ = (int)w; ar_h_ = (int)h;
+      host::ar_touch_resize((int)w, (int)h);   // the quad's touch controls lay out at the ring size
       host::log("metal: AR mirror ring is now %ux%u", w, h);
     }
     if (!ar_game_[slot]) {
@@ -1040,7 +1041,7 @@ class MetalBackend final : public Backend {
     // so the menu's shapes land relative to the game content.
     ar_overlay_frame_.shapes.clear();
     ar_overlay_frame_.texts.clear();
-    host::game_overlay_menu_only(ar_overlay_frame_, (int)w, (int)h);
+    host::game_overlay_ar(ar_overlay_frame_, (int)w, (int)h);
     MTLRenderPassDescriptor* rp2 = [MTLRenderPassDescriptor renderPassDescriptor];
     rp2.colorAttachments[0].texture = ar_overlay_[slot];
     rp2.colorAttachments[0].loadAction = MTLLoadActionClear;
@@ -1635,3 +1636,5 @@ int dashdance_ar_active(void) {
 }
 
 int dashdance_ar_snapshot(DashdanceArFrame* out) { return gx::metal_ar_snapshot(out) ? 1 : 0; }
+
+void dashdance_ar_touch(int64_t finger, int phase, float u, float v) { host::ar_touch_event(finger, phase, u, v); }

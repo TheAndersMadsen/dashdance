@@ -45,9 +45,10 @@ bool g_step_armed = false;
 int g_combo_frames = 0;
 uint16_t g_prev_buttons = 0;
 int g_prev_dir = 0, g_repeat = 0;
-bool g_touch_visible = false;
-float g_menu_button[4] = {0, 0, 0, 0};   // MENU touch button (window pixels), set by the overlay
-struct Layout { float x0, y0, x1, y1, row_h, top; } g_layout{};   // last drawn panel, for touch hits
+constexpr int kMenuSurfaces = 2;   // 0 = the flat window, 1 = the AR Mode quad
+bool g_touch_visible[kMenuSurfaces] = {};
+float g_menu_button[kMenuSurfaces][4] = {{0, 0, 0, 0}, {0, 0, 0, 0}};   // MENU touch button (surface pixels), set by the overlay
+struct Layout { float x0, y0, x1, y1, row_h, top; } g_layout[kMenuSurfaces]{};   // last drawn panel, for touch hits
 int g_open_at_frame = -1;
 
 std::string ascii(const std::string& s) { std::string out; for (char c : s) if (c >= 32 && c < 127) out += c; return out; }   // the glyph atlas is ASCII
@@ -65,8 +66,8 @@ bool apple_graphics() {
 std::vector<int> main_rows() {
   std::vector<int> v;
   for (int r = 0; r < ROW_MAIN_COUNT; ++r) {
-    if ((r == ROW_TOUCH_OPACITY || r == ROW_TOUCH_SIZE) && !g_touch_visible) continue;
-    if ((r == ROW_FULLSCREEN || r == ROW_VSYNC) && g_touch_visible) continue;   // macOS-only controls
+    if ((r == ROW_TOUCH_OPACITY || r == ROW_TOUCH_SIZE) && !g_touch_visible[0]) continue;
+    if ((r == ROW_FULLSCREEN || r == ROW_VSYNC) && g_touch_visible[0]) continue;   // macOS-only controls
     if (r == ROW_UPSCALE && !apple_graphics()) continue;                       // Metal only
     v.push_back(r);
   }
@@ -363,18 +364,18 @@ void menu_frame(PadState pads[4]) {
   if (apply_what >= 0 && apply) apply(snapshot, (MenuChange)apply_what);
 }
 
-bool menu_touch(float px, float py) {
+bool menu_touch(float px, float py, int surface) {
   int apply_what = -1;
   RuntimeSettings snapshot;
   std::function<void(const RuntimeSettings&, MenuChange)> apply;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_open.load()) {
-      if (g_touch_visible && px >= g_menu_button[0] && px <= g_menu_button[2] && py >= g_menu_button[1] && py <= g_menu_button[3]) { set_open(true); return true; }
+      if (g_touch_visible[surface] && px >= g_menu_button[surface][0] && px <= g_menu_button[surface][2] && py >= g_menu_button[surface][1] && py <= g_menu_button[surface][3]) { set_open(true); return true; }
       return false;
     }
     if (g_page == Page::Remap) { remap_finish(); return true; }   // a tap cancels a remap
-    const Layout l = g_layout;
+    const Layout l = g_layout[surface];
     if (px < l.x0 || px > l.x1 || py < l.y0 || py > l.y1) {   // tap outside: back a page, or close
       if (g_page == Page::Controls) { g_page = Page::Main; g_selected = index_of(main_rows(), ROW_CONTROLS); } else set_open(false);
       return true;
@@ -398,9 +399,9 @@ bool menu_touch(float px, float py) {
   return true;
 }
 
-void menu_overlay(OverlayFrame& out, int ww, int wh, bool touch_controls_visible) {
+void menu_overlay(OverlayFrame& out, int ww, int wh, bool touch_controls_visible, int surface) {
   std::lock_guard<std::mutex> lock(g_mutex);
-  g_touch_visible = touch_controls_visible;
+  g_touch_visible[surface] = touch_controls_visible;
   const RuntimeSettings s = g_settings;
   float unit = std::min(18.0f * std::max(window_pixels_per_point(), 1.0f), std::min(ww, wh) / 22.0f);
   float safe_t = 0, safe_l = 0, safe_r = 0, safe_b = 0;
@@ -424,9 +425,9 @@ void menu_overlay(OverlayFrame& out, int ww, int wh, bool touch_controls_visible
   if (!g_open.load()) {
     if (touch_controls_visible) {   // MENU button, top-right
       const float h = unit * 1.1f, w = h * 2.6f, m = unit * 0.5f;
-      g_menu_button[0] = ww - m - safe_r - w; g_menu_button[1] = m + safe_t; g_menu_button[2] = ww - m - safe_r; g_menu_button[3] = m + safe_t + h;
-      out.shapes.push_back({g_menu_button[0], g_menu_button[1], g_menu_button[2], g_menu_button[3], 1, 1, 1, 0.18f, h * 0.5f, 2.0f, 0.0f, 0, 0.0f, 0.0f});
-      out.texts.push_back({g_menu_button[0] + w * 0.5f, g_menu_button[1] + h * 0.22f, h * 0.56f, 1, 1, 1, 0.9f, 1, "MENU", w * 0.82f});
+      g_menu_button[surface][0] = ww - m - safe_r - w; g_menu_button[surface][1] = m + safe_t; g_menu_button[surface][2] = ww - m - safe_r; g_menu_button[surface][3] = m + safe_t + h;
+      out.shapes.push_back({g_menu_button[surface][0], g_menu_button[surface][1], g_menu_button[surface][2], g_menu_button[surface][3], 1, 1, 1, 0.18f, h * 0.5f, 2.0f, 0.0f, 0, 0.0f, 0.0f});
+      out.texts.push_back({g_menu_button[surface][0] + w * 0.5f, g_menu_button[surface][1] + h * 0.22f, h * 0.56f, 1, 1, 1, 0.9f, 1, "MENU", w * 0.82f});
     }
     return;
   }
@@ -488,7 +489,7 @@ void menu_overlay(OverlayFrame& out, int ww, int wh, bool touch_controls_visible
     out.texts.push_back({cx, top + unit * 8.7f, unit * 0.8f, 1, 1, 1, 0.55f, 1, line, panel_w - 2 * pad});
     out.texts.push_back({cx, y1 - pad - unit * 1.1f, unit * 0.7f, 1, 1, 1, 0.55f, 1,
                          touch_controls_visible ? "Tap anywhere to stop." : is_keyboard(device()) ? "Escape stops the remap." : "Hold L+R+Start to close the menu.", panel_w - 2 * pad});
-    g_layout = {x0, y0, x1, y1, row_h, top};
+    g_layout[surface] = {x0, y0, x1, y1, row_h, top};
     return;
   }
 
@@ -509,6 +510,6 @@ void menu_overlay(OverlayFrame& out, int ww, int wh, bool touch_controls_visible
                    : g_page == Page::Main ? "Up/Down select   Left/Right change   B resume"
                                           : "Up/Down select   Left/Right change   B back";
   out.texts.push_back({cx, y1 - pad - unit * 1.1f, unit * 0.7f, 1, 1, 1, 0.55f, 1, hint, panel_w - 2 * pad});
-  g_layout = {x0, y0, x1, y1, row_h, top};
+  g_layout[surface] = {x0, y0, x1, y1, row_h, top};
 }
 }  // namespace host

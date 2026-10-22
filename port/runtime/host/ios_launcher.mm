@@ -650,7 +650,7 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
 // display
 @property(nonatomic) UILabel* regionLabel;
 @property(nonatomic) UILabel* displayInfoLabel; @property(nonatomic, copy) NSString* displayDeviceName;
-@property(nonatomic) UIButton* scaleControl; @property(nonatomic) int resolutionScale; @property(nonatomic) UISegmentedControl* anisoControl; @property(nonatomic) UISegmentedControl* upscalerControl; @property(nonatomic) UISwitch* vsyncSwitch; @property(nonatomic) UISwitch* widescreenSwitch; @property(nonatomic) UISwitch* flashLCancelSwitch; @property(nonatomic) UISlider* sharpnessSlider; @property(nonatomic) UISwitch* onlineSwitch; @property(nonatomic) UISegmentedControl* delayControl;
+@property(nonatomic) UIButton* scaleControl; @property(nonatomic) int resolutionScale; @property(nonatomic) UISegmentedControl* anisoControl; @property(nonatomic) UISegmentedControl* upscalerControl; @property(nonatomic) UISwitch* vsyncSwitch; @property(nonatomic) UISwitch* widescreenSwitch; @property(nonatomic) UISwitch* flashLCancelSwitch; @property(nonatomic) UISlider* sharpnessSlider; @property(nonatomic) UISwitch* onlineSwitch; @property(nonatomic) UISegmentedControl* delayControl; @property(nonatomic) UISwitch* arSwitch;
 @property(nonatomic) UISlider* overlaySlider; @property(nonatomic) UISlider* overlayScaleSlider;
 @property(nonatomic) UIButton* playButton;
 @end
@@ -1252,6 +1252,11 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
   self.delayControl = [self segments:delays selected:self.settings->online_delay > 4 ? 4 : MAX(0, self.settings->online_delay - 1)];
   [s addArrangedSubview:[self row:@"Online input delay (frames)" symbol:@"timer" control:self.delayControl]];
   [s addArrangedSubview:[self label:@"Each frame of delay adds 16.7 ms. 1 is the lowest latency on a stable, nearby connection; 2 is Slippi's default and rolls back less on Wi-Fi. For online play a USB-C Ethernet adapter beats Wi-Fi." size:12 weight:UIFontWeightRegular alpha:0.6]];
+#if TARGET_OS_VISION
+  self.arSwitch = [[UISwitch alloc] init]; self.arSwitch.on = self.settings->ar_mode; self.arSwitch.onTintColor = kYellow();
+  [s addArrangedSubview:[self row:@"AR Mode (play in the room)" symbol:@"visionpro" control:self.arSwitch]];
+  [s addArrangedSubview:[self label:@"After Play, opens a mixed-reality space: Melee on a floating screen you place with your hands — pinch the picture to play its controls, pinch off it to move, two hands to turn and scale. The spot is remembered. The flat window keeps working beside it." size:12 weight:UIFontWeightRegular alpha:0.6]];
+#endif
   UIButton* preset = [self button:@"Competitive preset" symbol:@"bolt.fill" prominent:NO];
   [preset addTarget:self action:@selector(applyCompetitivePreset) forControlEvents:UIControlEventTouchUpInside];
   // Button on its own line with its explanation underneath: the title never hyphenates on a narrow phone.
@@ -1563,6 +1568,9 @@ static std::string controller_rate_line(const host::ControllerInfo& pad) {
   self.settings->flash_failed_lcancel = self.flashLCancelSwitch.on;
   self.settings->online = self.onlineSwitch.on;
   if (self.delayControl) self.settings->online_delay = [self selectedDelay];
+#if TARGET_OS_VISION
+  if (self.arSwitch) self.settings->ar_mode = self.arSwitch.on;
+#endif
   self.settings->sharpness = self.sharpnessSlider.value;
   self.settings->overlay_opacity = self.overlaySlider.value;
   self.settings->overlay_scale = self.overlayScaleSlider.value;

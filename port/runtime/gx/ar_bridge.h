@@ -39,6 +39,10 @@ void dashdance_vision_main(void);
 void dashdance_vision_set_dashboard_hook(void (*show)(void));
 void dashdance_vision_show_dashboard(void);
 void* dashdance_vision_take_controller(void);
+// AR Mode: the quad's touch surface. Swift feeds the quad's spatial events through this: finger
+// identifies the pinch, phase is 0 down / 1 move / 2 up, and u,v are the position across the game
+// picture (0..1, v = 0 at the top). A pinch on the picture plays; off it, it places the screen.
+void dashdance_ar_touch(int64_t finger, int phase, float u, float v);
 
 #ifdef __cplusplus
 }

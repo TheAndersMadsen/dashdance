@@ -33,9 +33,15 @@ struct OverlayFrame {
 };
 // Everything drawn over the game: touch controls, the in-game menu and the performance HUD.
 bool game_overlay(OverlayFrame& out);
-// Menu and HUD only (no touch controls, no letterbox artwork) at an explicit client size; the
-// Vision Pro mirror uses it, because its "window" is the game picture itself.
-void game_overlay_menu_only(OverlayFrame& out, int ww, int wh);
+// AR Mode (visionOS): the Vision Pro quad's overlay — its touch controls plus the menu/HUD at
+// the ring size, whose geometry menu_touch(..., 1) hit-tests.
+void game_overlay_ar(OverlayFrame& out, int ww, int wh);
+// The AR quad's touch surface (see ar_bridge.h): resized by the renderer per mirror resize,
+// fed by the quad's spatial events, and merged into port 1 after read_touch.
+struct PadState;
+void ar_touch_resize(int w, int h);
+void ar_touch_event(int64_t finger, int phase, float u, float v);   // phase 0 down, 1 move, 2 up; u,v across the picture, v = 0 at the top
+void ar_read_touch(PadState& p);
 // Fills `out` with the current overlay; returns false when nothing should be drawn.
 bool touch_overlay(OverlayFrame& out);
 void touch_set_opacity(float opacity);    // 0..1, user setting

@@ -5,6 +5,9 @@
 #   ./setup.sh /path/to/melee.iso            macOS app (default)
 #   ./setup.sh /path/to/melee.iso --ios      iPad/iPhone Simulator app (needs Xcode)
 #   ./setup.sh /path/to/melee.iso --visionos Vision Pro Simulator app (needs Xcode)
+#   ./setup.sh /path/to/melee.iso --visionos-device [--team auto]
+#                                            your Vision Pro: signed, installed over USB and launched (needs Xcode;
+#                                            a free Apple ID works — add --team <TEAMID> to pick a team)
 #   ./setup.sh /path/to/melee.iso --device   your own iPhone/iPad: dist/Dashdance.ipa for AltStore / SideStore /
 #                                            Sideloadly (no developer account needed), or add --team <TEAMID>
 #                                            (or --team auto) to sign with your Apple ID and install over USB
@@ -21,7 +24,7 @@ expect=""
 for arg in "$@"; do
   if [[ -n "$expect" ]]; then eval "$expect=\$arg"; expect=""; continue; fi
   case "$arg" in
-    --ios) TARGET=ios;; --visionos) TARGET=visionos;; --mac) TARGET=mac;; --device) TARGET=device;;
+    --ios) TARGET=ios;; --visionos) TARGET=visionos;; --visionos-device) TARGET=visionos-device;; --mac) TARGET=mac;; --device) TARGET=device;;
     --team) expect=TEAM;; --team=*) TEAM="${arg#--team=}";; --udid) expect=UDID;; --udid=*) UDID="${arg#--udid=}";;
     --*) fail "unknown option $arg";; *) ISO="$arg";;
   esac
@@ -192,6 +195,62 @@ print((ok or d or [{}])[0].get('identifier',''))" 2>/dev/null)"
       xcrun simctl launch booted $BID >/dev/null && echo "Launched. Touch controls are on by default; pair a controller in the Simulator's I/O menu."
     else
       echo "No Simulator is booted. Boot one, then: xcrun simctl install booted \"$APP\" and copy your disc into the app's Documents folder (Files app)."
+    fi
+    ;;
+  visionos-device)
+    [[ -d /Applications/Xcode.app ]] || fail "the Vision Pro device build needs the full Xcode from the App Store."
+    export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+    if [[ "$TEAM" == "auto" ]]; then
+      TEAM="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"Apple Development: .* (\([A-Z0-9]*\)".*/\1/p' | head -1)"
+      [[ -n "$TEAM" ]] || fail "no 'Apple Development' signing identity in your keychain; sign in to Xcode (Settings › Accounts) first."
+      echo "signing team: $TEAM (from your Apple Development certificate)"
+    fi
+    [[ -n "$TEAM" ]] || fail "give --team <TEAMID> (or --team auto): installing on a Vision Pro needs a development signature."
+    BUILD="$ROOT/build/visionos-device"
+    BID="app.dashdance.ios.$(echo "$TEAM" | tr '[:upper:]' '[:lower:]')"   # unique per team, so automatic signing can register it
+    step "Generating the port"
+    python3 "$ROOT/tools/bootstrap_port.py" --decomp-root "$DECOMP" --dol "$DOL" --build-dir "$BUILD" --gct-base 0x8065CC80 --macos-arch arm64 --stage generate
+    step "Building and signing with Xcode (team $TEAM, bundle id $BID)"
+    cmake -S "$ROOT" -B "$BUILD" -G Xcode -DCMAKE_SYSTEM_NAME=visionOS -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_SYSROOT=xros -DCMAKE_OSX_DEPLOYMENT_TARGET=2.0 \
+      -DMELEE_APPLE_TEAM="$TEAM" -DMELEE_IOS_BUNDLE_ID="$BID" -DMELEE_ARTIFACT_VERIFY=OFF \
+      -DMELEE_DECOMP_ROOT="$DECOMP" -DMELEE_DOL_PATH="$DOL" -DMELEE_PORT_GENERATED_DIR="$BUILD/generated/guest" \
+      -DMELEE_BUILD_PORT_TESTS=OFF -DMELEE_BUILD_PORT_HEADLESS=OFF -DMELEE_BUILD_PORT_METAL=ON >/dev/null
+    XLOG="$BUILD/xcodebuild.log"
+    if ! xcodebuild -project "$BUILD"/*.xcodeproj -target melee_port_mac -configuration Release -sdk xros -allowProvisioningUpdates -quiet build 2>&1 | tee "$XLOG"; [[ ${pipestatus[1]} -eq 0 ]] || false; then
+      if grep -q "No Account for Team\|No profiles for" "$XLOG"; then
+        fail "Xcode has your signing certificate but no Apple ID signed in, so it cannot make a provisioning profile. Open Xcode › Settings › Accounts, sign in, connect and unlock your Vision Pro, then run this again."
+      fi
+      fail "the signed device build failed; the full Xcode log is in $XLOG"
+    fi
+    APP="$(find "$BUILD" -maxdepth 4 -name Dashdance.app -path '*Release-xros*' | head -1)"
+    [[ -d "$APP" ]] || fail "the signed app did not appear under $BUILD"
+    # The Xcode generator writes CMake's post-build resources next to a literal
+    # 'Release${EFFECTIVE_PLATFORM_NAME}' folder (as on iOS): move them in and re-sign.
+    STRAY="$(dirname "$APP")/../Release\${EFFECTIVE_PLATFORM_NAME}/Dashdance.app"
+    if [[ -d "$STRAY" ]]; then cp -R "$STRAY"/. "$APP"/; else
+      cp -R "$ROOT/port/slippi_sys" "$APP/slippi_sys"; cp "$ROOT/port/app/icons/AppIcon.icon/Assets/glyph.png" "$APP/AppMark.png"; cp -R "$ROOT/port/app/art/controller" "$APP/controller"; fi
+    IDENTITY="$(codesign -dvv "$APP" 2>&1 | sed -n 's/^Authority=\(Apple Development: [^,]*\)$/\1/p' | head -1)"
+    ENT="$(mktemp).plist"; codesign -d --entitlements - --xml "$APP" > "$ENT" 2>/dev/null
+    codesign --force --sign "$IDENTITY" --entitlements "$ENT" --timestamp=none "$APP"
+    codesign --verify --deep --strict "$APP" || fail "re-signing the app failed"
+    rm -rf "$ROOT/dist/ipa" && mkdir -p "$ROOT/dist/ipa/Payload" && cp -R "$APP" "$ROOT/dist/ipa/Payload/"
+    (cd "$ROOT/dist/ipa" && rm -f ../Dashdance-visionos-signed.ipa && zip -qry ../Dashdance-visionos-signed.ipa Payload) && rm -rf "$ROOT/dist/ipa"
+    step "Installing on your Vision Pro"
+    if [[ -z "$UDID" ]]; then
+      UDID="$(xcrun devicectl list devices --json-output /dev/stdout 2>/dev/null | python3 -c "import sys,json
+d=json.load(sys.stdin)['result']['devices']
+ok=[x for x in d if x.get('connectionProperties',{}).get('tunnelState')=='connected' or x.get('deviceProperties',{}).get('bootState')=='booted']
+print((ok or d or [{}])[0].get('identifier',''))" 2>/dev/null)"
+    fi
+    if [[ -n "$UDID" ]] && xcrun devicectl device install app --device "$UDID" "$APP" >/dev/null 2>&1; then
+      echo "Installed on $UDID. Developer Mode must be on (Settings › Privacy & Security › Developer Mode); trust your"
+      echo "developer certificate under VPN & Device Management on first launch. Then copy your disc into the app's folder"
+      echo "in Files, launch, flip AR Mode on in the dashboard's Vision Pro card, and press Play."
+      xcrun devicectl device process launch --device "$UDID" "$BID" >/dev/null 2>&1 || true
+    else
+      echo "No Vision Pro connected (unlock it, plug it in over USB, and tap Trust). The signed app is at:"
+      echo "  $APP   and   $ROOT/dist/Dashdance-visionos-signed.ipa"
+      echo "Install it with: xcrun devicectl device install app --device <identifier> \"$APP\"   (identifiers: xcrun devicectl list devices)"
     fi
     ;;
 esac

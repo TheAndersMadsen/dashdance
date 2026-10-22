@@ -37,7 +37,8 @@ void menu_toggle();                        // from the event thread (keyboard)
 // Per frame from input_poll: handles the open combo and navigation, neutralises pads while open.
 void menu_frame(PadState pads[4]);
 // Touch: returns true when the point hit the menu (or its MENU button) and was consumed.
-bool menu_touch(float px, float py);
+// `surface`: 0 = the flat window, 1 = the AR Mode quad (each keeps its own drawn geometry)
+bool menu_touch(float px, float py, int surface = 0);
 // Text and shapes for the open menu and the HUD; appended to `out`.
-void menu_overlay(OverlayFrame& out, int window_w, int window_h, bool touch_controls_visible);
+void menu_overlay(OverlayFrame& out, int window_w, int window_h, bool touch_controls_visible, int surface = 0);
 }  // namespace host

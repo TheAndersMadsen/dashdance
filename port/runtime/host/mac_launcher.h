@@ -22,6 +22,7 @@ struct LauncherSettings {
   bool discord_enabled = true, discord_show_rank = true;   // Discord Rich Presence (macOS), through Dashdance's Discord application
   std::string rank; float rating = 0.0f;                  // the player's tier and rating, once the dashboard fetched them
   bool hud = false;            // performance HUD in game      // macOS: start in full screen (measured: ~10 ms display latency versus ~25 ms in a window, which costs a compositor frame)
+  bool ar_mode = false;        // AR Mode (visionOS): play on a floating screen in the room after Play
   int display_hz = 60;         // informational: the display's maximum refresh rate
   std::string replay_dir;      // for the recent-games list
   std::string gpu_name;        // informational

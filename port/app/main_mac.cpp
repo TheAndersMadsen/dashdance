@@ -155,6 +155,7 @@ bool ensure_dir(const std::string& path, const char* what) {
 static void save_launcher_ini(const fs::path& path, const host::LauncherSettings& settings) {
   std::ofstream out(path, std::ios::trunc);
   out << "iso=" << settings.iso << "\nwidescreen=" << (settings.widescreen ? 1 : 0) << "\nflash_failed_lcancel=" << (settings.flash_failed_lcancel ? 1 : 0) << "\nonline=" << (settings.online ? 1 : 0)
+      << "\nar=" << (settings.ar_mode ? 1 : 0)
       << "\nsharpness=" << settings.sharpness << "\noverlay=" << settings.overlay_opacity << "\noverlay_scale=" << settings.overlay_scale
       << "\nscale=" << settings.scale << "\nanisotropy=" << settings.anisotropy << "\nupscaler=" << settings.upscaler << "\nvsync=" << (settings.vsync ? 1 : 0)
       << "\nfullscreen=" << (settings.fullscreen ? 1 : 0) << "\nvolume=" << settings.volume << "\nhud=" << (settings.hud ? 1 : 0)
@@ -262,8 +263,7 @@ int dashdance_main(int argc, char** argv) {
     else { usage(); return 2; }
   }
   if (iso_arg.empty()) { if (const char* env = std::getenv("MELEE_ISO")) iso_arg = env; }
-  const bool ar_mode = ar_arg || (std::getenv("MELEE_AR") && *std::getenv("MELEE_AR") && *std::getenv("MELEE_AR") != '0');
-  gfx.ar_mirror = ar_mode;   // only consumed by the Vision Pro immersive renderer
+  bool ar_mode = ar_arg || (std::getenv("MELEE_AR") && *std::getenv("MELEE_AR") && *std::getenv("MELEE_AR") != '0');
 
   const fs::path support = fs::path(home_dir()) / "Library/Application Support/Dashdance";
 #if TARGET_OS_VISION
@@ -288,6 +288,7 @@ int dashdance_main(int argc, char** argv) {
       else if (const char* v = value("widescreen=")) settings.widescreen = *v == '1';
       else if (const char* v = value("flash_failed_lcancel=")) settings.flash_failed_lcancel = *v == '1';
       else if (const char* v = value("online=")) settings.online = *v == '1';
+      else if (const char* v = value("ar=")) settings.ar_mode = *v == '1';
       else if (const char* v = value("online_delay=")) settings.online_delay = std::clamp(std::atoi(v), 1, 9);
       else if (const char* v = value("sharpness=")) settings.sharpness = std::clamp((float)std::atof(v), 0.0f, 1.0f);
       else if (const char* v = value("overlay=")) settings.overlay_opacity = std::clamp((float)std::atof(v), 0.0f, 1.0f);
@@ -369,6 +370,9 @@ int dashdance_main(int argc, char** argv) {
     if (!settings.online) offline = true;
     if (ensure_dir(support.string(), "support")) save_launcher_ini(remembered, settings);
   }
+  // AR Mode: the flag or env, the dashboard's Vision Pro card, or the remembered launcher choice.
+  ar_mode = ar_mode || settings.ar_mode;
+  gfx.ar_mirror = ar_mode;   // only consumed by the Vision Pro immersive renderer
 #if TARGET_OS_VISION
   if (ar_mode) {
     // AR Mode: open the mixed-style immersive space now (SwiftUI shows its confirmation on
