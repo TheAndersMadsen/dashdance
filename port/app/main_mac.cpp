@@ -249,7 +249,7 @@ int dashdance_main(int argc, char** argv) {
     else if (a == "--time-base") { o.time_base = std::strtoull(next(), nullptr, 0); o.time_base_set = true; }
     else if (a == "--strict-aot") allow_interpreter = false;
     else if (a == "--allow-interpreter") allow_interpreter = true;
-    else if (a == "--expect-scene") { expect_scene = true; expected_scene = (uint16_t)std::strtoul(next(), nullptr, 0); }
+    else if (a == "--expect-scene") { expect_scene = true; o.trace_scenes = true; expected_scene = (uint16_t)std::strtoul(next(), nullptr, 0); }
     else if (a == "--audio-dump") o.audio_dump = next();
     else if (a == "--trace-calls") o.trace_calls = true;
     else if (a == "--quiet") o.quiet = true;

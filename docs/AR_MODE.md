@@ -3,9 +3,10 @@
 [xelee](https://github.com/rhythmerc/xelee) plays Super Smash Bros. Melee inside your room on a
 Meta Quest 3: the game screen floats in space, you place it (and, in xelee's full form, the whole
 3D arena) with your hands, menus follow a laser pointer, and sound comes from where the fighters
-are. This document is the study that brought that experience to Dashdance on Apple Vision Pro as
-**AR Mode** — an alternative mode in which the game and its Slippi online stack are unchanged and
-an immersive mixed-reality presentation is added alongside the flat window.
+are. This document studies that experience and describes Dashdance's **AR Mode** on Apple Vision
+Pro. Dashdance currently implements the floating-screen presentation: the game and its Slippi
+online stack are unchanged, and the finished game picture is placed in an immersive space.
+Xelee's full 3D arena is a separate, unimplemented phase (§4).
 
 Part 1 documents how xelee works (from its code and docs). Part 2 documents the Vision Pro
 platform research. Part 3 is the design and as-built state of Dashdance's implementation.
@@ -110,8 +111,9 @@ apparent 120 Hz), and deadline-driven dynamic resolution. The relevant takeaway 
 
 ## 2. Vision Pro platform research
 
-What follows is the condensed API map (verified against Apple's documentation and the
-CompositorServices sample code, visionOS 26 SDK, October 2026).
+What follows is the condensed API map from Apple's documentation and CompositorServices
+samples. The implementation's API spellings were checked against the installed Xcode 27
+visionOS SDK in October 2026; runtime evidence is listed separately in §3.5.
 
 ### 2.1 The compositing model
 
@@ -130,7 +132,7 @@ textures — bypassing the render server. The system still owns passthrough and 
 ```
 while layerRenderer.state != .invalidated {
   if paused { layerRenderer.waitUntilRunning(); continue }
-  let frame = layerRenderer.queryNextFrame()          // may return nil; one at a time
+  let frame = layerRenderer.queryNextFrame()          // if nil, briefly yield and retry
   frame.startUpdate()                                  // update phase: simulate, animate
   let timing = frame.predictTiming()                   // predicted deadlines
   ... update scene (no head-dependent work) ...
@@ -152,15 +154,17 @@ Rendering details:
 
 - Textures: `drawable.colorTextures[0]` / `depthTextures[0]`; with the default (layered) layout
   this is a **texture array with one slice per eye**; `drawable.views` holds one `View` per eye
-  with `transform` (device→eye), a texture-map viewport, and a rasterization rate map.
+  with `transform` (eye→device) and a texture-map viewport. Apply the drawable's rasterization
+  rate map to the render pass when foveation is enabled.
 - A single render pass draws both eyes (`renderTargetArrayLength = drawable.views.count`) with
   **vertex amplification** (`setVertexAmplificationCount`); the vertex shader picks per-eye data
-  via `[[view_index]]`.
+  via `[[amplification_id]]`. Dedicated textures require each pass to use its own eye's matrix,
+  texture index and slice.
 - Per-eye matrices: `viewMatrix = (deviceAnchor.originFromAnchorTransform * view.transform).inverse`,
   `projection = drawable.computeProjection(convention: .rightUpBack, viewIndex:)`.
-- The default configuration is HDR `rgba16Float`; foveation and layout are adjustable through a
-  `CompositorLayerConfiguration`. For 8-bit sRGB content, `.rgba8Unorm_sRGB` is a valid choice —
-  sRGB bytes pass through with correct blending.
+- Dashdance configures HDR `rgba16Float` output and reverse-Z depth. Foveation and layout are
+  adjustable through `CompositorLayerConfiguration`. Its shader composites the game's 8-bit
+  display-space textures before converting the result to linear light for the HDR target.
 - The layer runs on the app's own thread (`Task { @RendererActor ... }`); the system pauses/
   invalidates it as the space opens and closes.
 
@@ -168,12 +172,13 @@ Rendering details:
 
 A fully custom Metal layer gets no UIKit/RealityKit gestures, but the system's **look + pinch**
 still works: `layerRenderer.onSpatialEvent` delivers a `SpatialEventCollection` on the main
-thread — each event has an `id`, a `phase` (`.active`/`.ended`/`.cancelled`), and either an
-`inputDevicePose` (pose of the pointing hand in world space) or a `selectionRay` (origin +
-direction). Drag and two-handed gestures are just multiple concurrently-active events. No
-ARKit hand-skeleton processing is required for pinch/drag/twist/scale — the Simulator's
-"Select to interact" mode drives these same events with the Mac pointer (click = tap, drag =
-move, Option = second hand), which is how the mode is tested without a headset.
+thread — each event has an `id`, a `phase` (`.active`/`.ended`/`.cancelled`), a location, and
+optional `inputDevicePose` and `selectionRay` values. The selection ray locates the intended
+target; the physical hand position supplies placement movement. End/cancel events must still
+release input when the hand pose is absent. Multiple active events allow two-handed gestures
+without an ARKit hand-skeleton provider. Simulator controls are described in Apple's
+[Device Hub guide](https://developer.apple.com/documentation/xcode/interacting-with-your-visionos-app-in-device-hub);
+their availability does not establish that Dashdance's gesture mapping has passed testing.
 
 ### 2.4 World tracking and persistence
 
@@ -194,10 +199,11 @@ Info.plist keys for device builds: `NSWorldSensingUsageDescription` (and
 
 ### 2.5 Simulator support
 
-The visionOS Simulator opens immersive spaces (rendered into a simulator window), runs
-`ARKitSession` world tracking (the device pose follows the simulated camera), persists world
-anchors in the simulator container, and delivers spatial events from the Mac pointer. Hand
-skeleton tracking itself is not simulated — another reason phase 1 uses spatial events.
+Xcode 27 presents the visionOS Simulator in **Device Hub**, including a synthetic room and
+camera controls. This is sufficient to inspect Dashdance's floating game screen; the current
+evidence includes actual Training gameplay there. Camera movement, spatial input and anchor
+persistence require their own checks. A visible simulator screenshot does not verify stereo
+comfort, headset tracking, real hands or room-anchor behavior on a Vision Pro.
 
 ### 2.6 Mapping xelee → Vision Pro
 
@@ -211,11 +217,11 @@ skeleton tracking itself is not simulated — another reason phase 1 uses spatia
 | `XR_FB_spatial_entity` anchor persistence | `WorldAnchor` (persists across launches by contract) |
 | SpaceWarp / ASW to 120 Hz | Not available; eyes re-render every display frame (90/100 Hz) from the newest 60 Hz game frame |
 | Deadline-driven dynamic resolution | `LayerRenderer` paces; internal EFB scale caps already exist (`metal_scale_caps`) |
-| Separate 2D panel activity | The existing dashboard window stays open beside the immersive space (mixed style) |
+| Separate 2D panel activity | visionOS supports app windows beside a space; Dashdance dismisses its main window during AR and restores the game window when AR closes |
 
 ### 2.7 Porting notes: what changes between Quest and Vision Pro
 
-From Apple's guidance for Metal games on visionOS (WWDC24 10093, "Render Metal with passthrough",
+From Apple's guidance for Metal games on visionOS (WWDC24 10092, "Render Metal with passthrough",
 the HIG for immersive experiences) and the compositor documentation of both platforms:
 
 - **The compositor owns reprojection on both platforms, differently.** Quest's TimeWarp/ASW
@@ -224,21 +230,21 @@ the HIG for immersive experiences) and the compositor documentation of both plat
   dims content near real objects in mixed immersion. The app-side consequence is the same: match
   the predicted pose, never lag it. There is no ASW on Vision Pro — the pattern is eyes re-rendered
   every display frame from the newest game state, with the game simulation decoupled (which is what
-  the mirror + shared-event design does).
+  the mirror, producer event and frame-lease design does).
 - **No app-owned compositor layers.** Quest apps compose quad layers (screen, HUD, lasers) on top
   of passthrough; on Vision Pro everything is rendered in-eye into the one immersive layer. AR
   Mode therefore composites the in-game menu and the touch controls itself, in its own shader.
-- **Windows and spaces are system-managed.** Opening an immersive space hides *other apps''*
-  windows but keeps your own visible beside it (mixed style) — Dashdance's dashboard and flat
-  window legitimately coexist with the quad. Space open/dismiss is asynchronous; only one
+- **Windows and spaces are system-managed.** App windows can coexist with a mixed immersive
+  space. Dashdance dismisses its main window while the quad is the display and requests its
+  recreation after the space closes. Space open/dismiss is asynchronous; only one
   immersive space per app; `UIApplicationSupportsMultipleScenes` must be true (this bit us —
   see §3.3).
 - **Input differs more than rendering.** Quest ships controllers with laser rays; Vision Pro has
   none — the system ray is your eyes, and gestures are look+pinch. Ports either drive a virtual
   cursor from the pinch (xelee's laser) or map the game's own touch controls onto the screen.
   AR Mode does the latter: the quad carries Dashdance's touch layout and pinches become fingers
-  (see §3.1), which keeps the game playable with no controller at all. Gamepads (MFi) work
-  throughout and take over from the on-screen controls, as on iOS.
+  (see §3.1). This is the intended controller-free input path; actual pinch-driven play remains
+  unverified. The existing gamepad input path also remains available.
 - **Anchors: Meta's persistence API vs ARKit's built-in contract.** Quest needs
   `XR_FB_spatial_entity` + a storage layer; visionOS `WorldAnchor` UUIDs and transforms persist
   across launches by contract, and `allAnchors` returns them on launch.
@@ -253,65 +259,80 @@ the HIG for immersive experiences) and the compositor documentation of both plat
 
 ## 3. Dashdance's AR Mode
 
-![AR Mode on Apple Vision Pro: Melee's Online Play menu floating in the room, with the game's
-touch controls drawn around the picture](screenshots/AR_MODE_VISIONOS.jpg)
+![Actual Training gameplay on Dashdance's floating 4:3 AR screen in the Vision Pro Simulator](screenshots/AR_TRAINING_VISION_PRO.jpg)
 
 ### 3.1 What it is
 
-An alternative presentation mode on visionOS: after Play, the app opens a mixed-style immersive
-space and the game picture appears on a floating screen in the room. The flat window stays open
-beside it (dashboard, touch controls, replays — everything keeps working there). The screen can
-be **placed with the system pinch**: pinch-drag moves it, one pinched hand twisted turns it,
-two pinched hands spread/pinch scale it; releasing adopts the spot into a persisted world
-anchor, so the screen is where you left it next launch. **A pinch that lands on the picture
-plays**: the quad carries Dashdance's touch layout (buttons, sticks, the MENU chip) and the
-pinch becomes a finger there — Melee is playable with no controller at all, and a paired
-gamepad takes over exactly as on the flat window. The in-game menu renders on the quad and its
-rows are tappable. Input is otherwise whatever already works: a paired gamepad, or the flat
-window's touch overlay.
+After Play, AR Mode opens an immersive space and presents the finished game picture on a
+floating screen in the room. This includes fights and Training: the stage and fighters remain
+inside that picture. The screen has a position and orientation in space; the game itself is
+not re-rendered as a 3D arena around the player.
 
-In xelee's terms this is the **virtual screen path** (§1.1a) with placement and persistence —
-the foundation the 3D arena (§4) builds on.
+The main SwiftUI window is dismissed and the flat SDL window is hidden while AR is open.
+Closing AR requests a new main scene and reattaches the existing SDL game window to it. The
+game and Metal layer are retained, and a one-time launch guard prevents another simulation
+thread from starting when the root view reappears. This recovery path is implemented but
+still needs the runtime checks listed in §3.5.
+
+The implemented gesture mapping intersects the system selection ray with the screen. A pinch
+on the picture feeds Dashdance's touch controls and in-game menu. A pinch outside it starts
+placement: one hand moves the screen in three dimensions; two hands change its yaw and width.
+Releasing placement saves a rigid world-anchor pose and stores the screen width separately.
+The renderer releases active touches on cancellation, pause and closure. These mappings and
+cross-launch persistence are implemented, but controller-free play has not yet been verified.
+
+This is xelee's **virtual screen path** (§1.1), with separate work still needed for the
+3D arena in §4.
 
 ### 3.2 How a frame reaches the quad
 
-Dashdance's renderer already renders every game frame into an intermediate EFB texture and
-blits the presented region to the window (`gx_metal.mm`, `present_efb`). AR Mode adds a
-**mirror**: when enabled, `present_efb` additionally renders
+The game renders into its intermediate EFB texture. While the immersive space is open, the
+Metal backend skips flat presentation and runs `render_mr` at each XFB copy. It writes the
+game picture and a separate premultiplied touch/menu/HUD overlay into a three-slot ring. Slot
+`sequence % 3` belongs to the published mirror sequence; this sequence advances only when a
+mirror frame is published, independently of the game's frame counter.
 
-1. the game picture (the XFB source region of the EFB, exactly what the flat blit samples) into
-   ring texture `game[i]`, and
-2. the in-game menu/HUD overlay (`menu_overlay` at the ring's size — the game rect fills the
-   ring, so menu shapes land correctly) into ring texture `overlay[i]` (premultiplied alpha),
+The producer signals an `MTLSharedEvent` named `done` after encoding the mirror passes. A
+successful `dashdance_ar_snapshot` acquires a frame lease that retains the latest picture,
+overlay and event. Swift waits for `done` on its GPU command buffer before sampling them,
+then releases the lease from the command buffer's completion handler. Early exits release
+the lease immediately. Every acquisition has its own lease, including repeated display-rate
+reads of the same game frame.
 
-for a 3-slot ring (`i = frame_counter % 3`, matching the existing FRAME_SLOTS command buffers).
-An `MTLSharedEvent` is notified with the frame sequence once the command buffer completes;
-the quad's fragment shader samples `game` under `overlay` (premultiplied). The Swift side gets
-the latest sequence/slot/textures through a C bridge and encodes `encodeWaitForEvent` on its own
-command buffer — no CPU waits anywhere, simulation and flat presentation unchanged.
+Before reusing a ring slot, the producer checks for leases on that slot. If it is still in
+use, it skips that mirror publish instead of waiting for the consumer. Resizing replaces the
+ring while existing leases keep old textures alive. There is no consumer `read` event and
+no GPU wait on a consumer acknowledgment in the game's command stream.
 
-Sync: the game signals `done` with the frame sequence once the mirror passes are encoded into
-its command buffer, and the quad signals `read` with the sequence it consumed. The game skips a
-mirror frame only while the quad is more than two published frames behind — the check compares
-against the published sequence, not the frame counter, so a missing or closed space can never
-deadlock the game, and the mirror resumes by itself the moment the quad catches up. When the
-system occludes the flat window (it happens inside an immersive space) the render thread drains
-the flat present but the mirror keeps rendering: on Vision Pro the quad is the primary display.
+Presentation aspect comes from the player's 4:3/16:9 setting rather than the EFB's pixel ratio.
+Touch and menu geometry use the displayed aspect, while texture sampling maps that logical
+surface onto the ring. The AR path runs the requested MetalFX pass itself, including the Auto
+scale case, because flat presentation is skipped; without MetalFX it applies the configured
+sharpening. These code paths exist, but 16:9 and the image-quality variants still need visual
+acceptance checks.
+
+The quad composites the picture and overlay in the same display-color space as the flat path,
+then converts the result to linear light for the `rgba16Float` compositor target. Its pipeline
+binds a sampler, writes reverse-Z depth, uses the drawable's foveation maps, and selects the
+correct eye matrix and texture in both layered and dedicated layouts. When the compositor
+has no frame available, the render task yields briefly instead of spinning.
 
 ### 3.3 Where things live
 
 | File | Role |
 |---|---|
-| `port/runtime/gx/ar_bridge.h` | The C ABI shared by the game, the Metal renderer and Swift (`DashdanceArFrame`, `dashdance_ar_touch`) |
-| `port/runtime/gx/gx_metal.{h,mm}` | `MetalOptions::ar_mirror`; the ring, the shared events, `metal_ar_snapshot()`, the touch-event entry |
+| `port/runtime/gx/ar_bridge.h` | The C ABI shared by the game, Metal and Swift: frame snapshots/leases, lease release, touch events and app-flow hooks |
+| `port/runtime/gx/gx_metal.{h,mm}` | `MetalOptions::ar_mirror`; ring ownership, producer event, display aspect, MetalFX/sharpening and snapshot acquisition/release |
 | `port/runtime/host/game_menu.cpp` | Per-surface menu geometry (`menu_overlay`/`menu_touch(..., surface)`: 0 = flat window, 1 = the quad) |
-| `port/runtime/host/window_sdl.cpp` | `game_overlay_ar()` and the quad's touch surface (`ar_touch_resize/event/overlay/read`) — a second instance of the touch layout, sized to the ring, merged into port 1 |
-| `port/app/main_mac.cpp` | `--ar` / `MELEE_AR` / the dashboard card / the remembered `ar=` setting; on visionOS requests the immersive space after Play and waits for it before starting the game; `main()` becomes `dashdance_main()` with the entry provided by Swift |
-| `port/app/visionos/bridge.h/.c` | The space-open and dashboard hooks (registered by Swift, called by the game flow) |
-| `port/app/visionos/DashdanceVisionApp.swift` | The visionOS-only `App`: WindowGroup (dashboard host) + `ImmersiveSpace` in mixed style; `@_cdecl("main")` runs it (a static library gets no `@main` entry) |
+| `port/runtime/host/window_sdl.cpp` | The quad's independent touch/menu surface in displayed-aspect coordinates, merged into port 1; main-thread window visibility and notification of the native SDL window |
+| `port/app/main_mac.cpp` | AR options and space-open request; the game phase transition, one-time game-thread launch and window-restoration entry point |
+| `port/app/visionos/bridge.h/.c` | Space/dashboard hooks and the native-window notification shared with Swift |
+| `port/app/visionos/DashdanceVisionApp.swift` | SwiftUI app lifecycle, dashboard/game phases, saved open-window action, and a UIKit scene marker that reattaches the existing SDL window to the recreated main scene |
 | `port/app/visionos/ARScreenRenderer.swift` | The `LayerRenderer` loop, quad shaders, play-vs-place gesture classification, world-anchor persistence |
 | `port/CMakeLists.txt` | visionOS: compiles the Swift sources with `swiftc -emit-library -static`, links SwiftUI/CompositorServices/ARKit/`_CompositorServices_SwiftUI` |
 | `port/app/ios/Info.plist.in` | `UIApplicationSupportsMultipleScenes` (required to open a space beside the window), `NSWorldSensingUsageDescription`, `NSHandsTrackingUsageDescription` |
+| `port/scripts/ar_training_acceptance.txt` | Scene-gated input sequence that reaches actual Training gameplay (`major=0x1C`, `minor=0x02`) |
+| `setup.sh` | Builds the chosen platform, selects a matching booted simulator and honors `--udid` for installation and launch |
 
 Three SDK notes for whoever touches the Swift next: in the current Xcode the SwiftUI surface of
 CompositorServices lives in the `_CompositorServices_SwiftUI` module (`CompositorLayer` there is
@@ -328,15 +349,23 @@ work landed.
 ### 3.4 Running it
 
 ```bash
-./setup.sh /path/to/melee.iso --visionos          # builds and installs into the booted Vision Pro Simulator
-SIMCTL_CHILD_MELEE_AR=1 xcrun simctl launch booted app.dashdance.ios
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+VISION_SIM_UDID="the-booted-visionos-simulator-uuid"
+./setup.sh /path/to/melee.iso --visionos --udid "$VISION_SIM_UDID"
+SIMCTL_CHILD_MELEE_AR=1 xcrun simctl launch "$VISION_SIM_UDID" app.dashdance.ios
 ```
 
 In the app, the dashboard's **Display & Performance** card has an **AR Mode (play in the room)**
-switch — flip it on and press Play; the choice is remembered in `launcher.ini` (`ar=`). On the
-Simulator, use the window's "Select to interact" mode: the pointer is the gaze ray, click =
-pinch (drag on the picture plays its controls; drag off it moves the screen; Option-click is the
-second hand for twist/scale).
+switch — flip it on and press Play; the choice is remembered in `launcher.ini` (`ar=`). Open
+the selected Vision Pro simulator in Xcode 27's Device Hub to inspect its room view. Follow
+the installed Device Hub controls for camera movement and simulated interaction. Multi-hand
+interaction remains unverified.
+
+`port/scripts/ar_training_acceptance.txt` drives the game into Training, with scene gates for
+the character-select screen, stage select and the running match. Its gameplay target is
+`major=0x1C`, `minor=0x02` (`--expect-scene 0x021c`). Scripted input and `MELEE_PAD_FILE` take
+precedence over normal controller/touch input, so remove those overrides when testing actual
+pinches or a gamepad. Reaching Training with a script does not verify spatial controls.
 
 For a **real Vision Pro**:
 
@@ -349,31 +378,35 @@ dashboard and press Play. `MELEE_AR=1` / `--ar` remain as env/flag overrides for
 
 ### 3.5 Verification status
 
-Verified on the **visionOS 27 Simulator** (`xrsimulator`, Apple-Vision-Pro-4K device type),
-end to end: dashboard renders (controller connects over Bluetooth, disc card resolves the
-image, the AR Mode switch is on the Display & Performance card), Play → the mixed-style
-immersive space opens, the game boots and renders on the floating screen in the room with the
-in-game overlay composited around it, the mirror handshake stays live for the whole session
-(the quad consumes the newest published frame within two publishes), sim time stays at
-~0.6–1.3 ms/frame with no late frames, and the flat window keeps presenting beside the space.
-With AR Mode off (switch, flag and env all unset), the app behaves exactly as before.
+Evidence recorded on **22 October 2026**, using Xcode 27 and the **visionOS 27 Simulator**
+(`xrsimulator`, Apple-Vision-Pro-4K). These results describe observed sessions; a source fix
+or successful build does not by itself establish that a behavior passed.
 
-Also verified on macOS and iOS (the same shared renderer/host files): a 600-frame scripted match
-with the mirror on runs at 1.6 ms/frame, exit 0, and a captured presented frame is byte-identical
-with the mirror on and off — the flat path is untouched.
+| Check | Evidence / current status |
+|---|---|
+| Actual 4:3 Training gameplay in AR | **Observed.** The acceptance script and an external pad-file driver reached `major=0x1C`, `minor=0x02`; live gameplay appeared on the floating screen in the simulated room. |
+| Screenshot | Native simulator capture: [`AR_TRAINING_VISION_PRO.jpg`](screenshots/AR_TRAINING_VISION_PRO.jpg). This is a running Training session, not a menu or a mockup. |
+| Metal validation during gameplay | **No validation errors observed in the tested gameplay session.** That session crashed on quit in power-management teardown; a main-thread fix has been made but its rerun is pending. This is not a clean-exit pass. |
+| Spatial pinch controls and placement | **Not verified.** Selection-ray hit testing, cancellation handling and hand-based movement are implemented; menu selection, stick/buttons, move, yaw and two-hand scale still need interaction tests. |
+| Camera movement and screen anchoring | **Not verified.** A front-facing room capture does not demonstrate parallax, head tracking or a stable placement under camera movement. |
+| 16:9 and image-quality settings | **Not verified visually.** Display-aspect geometry and the AR MetalFX/sharpening paths are implemented. |
+| Closing AR and restoring the flat game window | **Not verified after the scene-binding changes.** Test ordinary closure and interruption/reopen without starting another game thread or losing the window. |
+| Anchor restore and recentering | **Not verified.** The renderer stores a rigid anchor and width, but does not currently consume `anchorUpdates`; Digital Crown recentering or world-origin corrections therefore need additional work and testing. |
+| Per-eye rendering and foveation on hardware | **Not verified on a device.** API checks and a simulator picture do not establish stereo or headset behavior. |
+| Performance and other platforms | No zero-late-frame, latency or current-diff macOS/iOS regression result is claimed here. Measure those separately from builds and simulator tooling. |
 
-**Not yet verified on a Vision Pro device** — use `--visionos-device --team auto` for that:
-hand-driven placement and play feel, real head-tracked latency, the world-sensing authorization
-prompt, and gesture behavior through the real `onSpatialEvent` pipeline. On the Simulator,
-gestures are exercisable through the "Select to interact" mode; world-anchor persistence was
-exercised only through the default-placement path.
+**No Vision Pro hardware validation has been completed.** Device testing still needs real
+look-and-pinch input, two-hand placement, comfort, tracking, authorization and persistence.
+Apple's [world-tracking guidance](https://developer.apple.com/documentation/visionos/tracking-points-in-world-space)
+explains that recentering changes anchor coordinates and that apps should process anchor updates.
 
 ---
 
 ## 4. Phase 2 plan: the 3D arena
 
-The full xelee experience — the fight floating in the room — is designed and scoped but not
-built. The missing piece is draw categorization and the camera capture (§1.1b):
+The full xelee experience — the stage and fighters rendered as 3D geometry in the room — is
+planned but not built. Training currently uses the same floating 2D screen as every other
+game scene. The missing pieces include draw categorization and camera capture (§1.1):
 
 1. **Capture the fight camera.** xelee hooks `cm/camera.c`. Dashdance doesn't modify game code,
    but it doesn't need to: the fight camera's view matrix lives in guest RAM at an address the
@@ -404,13 +437,14 @@ built. The missing piece is draw categorization and the camera capture (§1.1b):
 
 - xelee: <https://github.com/rhythmerc/xelee> — `docs/quest-xr.md` (the master XR document),
   `docs/xr-stage-placement-ux.md` §A.1 (placement transforms), `src/pc/xr_scene.c` (staging).
-- Compositor Services: "Drawing fully immersive content using Metal";
-  sample "Interacting with virtual content blended with passthrough" (WWDC24 10092).
+- Compositor Services: [Drawing fully immersive content using Metal](https://developer.apple.com/documentation/compositorservices/drawing-fully-immersive-content-using-metal);
+  sample [Interacting with virtual content blended with passthrough](https://developer.apple.com/documentation/compositorservices/interacting-with-virtual-content-blended-with-passthrough)
+  (associated with WWDC24 10092, "Render Metal with passthrough in visionOS").
 - ARKit (visionOS): `ARKitSession`, `WorldTrackingProvider`, `WorldAnchor` (persistence),
-  `HandTrackingProvider`; "Tracking specific points in world space".
-- Simulator: "Interacting with your app in the visionOS simulator" (gesture simulation).
-- Porting patterns: "Bring your iOS or iPadOS game to visionOS" (WWDC24 10093 — hybrid
-  window/space Metal games, stereoscopy, head prediction); the Human Interface Guidelines for
-  immersive experiences (comfort, immersion levels, passthrough dimming); "Presenting windows and
-  spaces" (window visibility beside a space, `UIApplicationSupportsMultipleScenes`).
+  `HandTrackingProvider`; [Tracking specific points in world space](https://developer.apple.com/documentation/visionos/tracking-points-in-world-space).
+- Simulator: [Interacting with your visionOS app in Device Hub](https://developer.apple.com/documentation/xcode/interacting-with-your-visionos-app-in-device-hub).
+- Porting patterns: [Bring your iOS or iPadOS game to visionOS](https://developer.apple.com/videos/play/wwdc2024/10093/)
+  (WWDC24 10093 — windowed Metal games, stereoscopy and head tracking); Apple's
+  [Immersive experiences](https://developer.apple.com/design/human-interface-guidelines/immersive-experiences)
+  Human Interface Guidelines.
 - Meta compositor references (TimeWarp/Application SpaceWarp) for the ASW comparison in §2.7.

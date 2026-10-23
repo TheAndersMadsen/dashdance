@@ -1,0 +1,44 @@
+# Vision Pro AR acceptance: actual Training gameplay, mode 1C/state 02.
+# Use --offline, MELEE_FAKE_LOGIN=1, --ar and --expect-scene 0x021c.
+# Scene gates tolerate boot length differences. The CPU is the default Mr. Game & Watch.
+# Script input replaces physical controls; test pinch controls separately without --script.
+@scene 0x28 0x00
+440 A
+470
+540 A
+570
+640 A
+670
+@scene 0x01 0x00
+60 B
+70
+160 B
+170
+320 A
+330
+420 sy=127
+426
+520 A
+530
+@scene 0x1C 0x00
+150 sy=127
+165
+200 sx=80
+210
+280 A
+300
+500 START
+520
+@scene 0x1C 0x01
+60 sy=100
+90 A
+100
+@scene 0x1C 0x02
+60
+120 sx=80
+150 A
+156
+210 X
+216
+300 sx=-80
+330
