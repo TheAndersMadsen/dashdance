@@ -40,11 +40,11 @@ namespace slippi::report {
 namespace {
 using json = nlohmann::json;
 #if defined(_WIN32)
-const wchar_t* USER_AGENT = L"SlippiDolphin (b: ishiiruka) (v: 3.6.4) (o: windows)";
+const wchar_t* USER_AGENT = L"SlippiDolphin (b: ishiiruka) (v: 3.7.0) (o: windows)";
 #elif defined(__APPLE__)
-const char* USER_AGENT = "SlippiDolphin (b: ishiiruka) (v: 3.6.4) (o: macos)";
+const char* USER_AGENT = "SlippiDolphin (b: ishiiruka) (v: 3.7.0) (o: macos)";
 #else
-const char* USER_AGENT = "SlippiDolphin (b: ishiiruka) (v: 3.6.4) (o: linux)";
+const char* USER_AGENT = "SlippiDolphin (b: ishiiruka) (v: 3.7.0) (o: linux)";
 #endif
 const char* ENDPOINT = "https://internal.slippi.gg/graphql";
 constexpr int MAX_ATTEMPTS = 5;

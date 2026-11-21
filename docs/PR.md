@@ -42,6 +42,12 @@ Details and evidence for each are in `docs/MAC_FIXES.md`.
 
 ## Features
 
+- Online play works again after Slippi 3.7.0: matchmaking speaks the new websocket service
+  (wss://matchmaking.slippi.gg/v1/queue) with STUN public-address discovery, NAT type, ticket resume and 15 s
+  NAT keepalives, ported from slippi-rust-extensions; Dashdance reports version 3.7.0, reads `mmr` and `isBot`
+  from the match, and uses 3.7.0's gap-free rank thresholds. `port_mm_probe` (transport-test build) checks it
+  against the live service.
+
 - Show live ping in the performance HUD during online matches.
 - Let players opt into Slippi's red flash on failed L-cancels from the Apple dashboards, with an in-game setting saved for the next launch.
 

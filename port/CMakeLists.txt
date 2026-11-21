@@ -228,9 +228,22 @@ endif()
 
 if(MELEE_BUILD_PORT_TRANSPORT_TESTS)
   add_executable(port_slippi_loopback_test tests/slippi_loopback_test.cpp
-    runtime/hle/slippi_net.cpp runtime/hle/slippi_text.cpp runtime/hle/slippi_input_suggestions.cpp runtime/hle/slippi_match_quality.cpp)
+    runtime/hle/slippi_net.cpp runtime/hle/slippi_matchmaking_protocol.cpp runtime/hle/slippi_text.cpp runtime/hle/slippi_input_suggestions.cpp runtime/hle/slippi_match_quality.cpp)
   target_include_directories(port_slippi_loopback_test PRIVATE runtime/hle runtime/host runtime/ppc third_party)
   target_link_libraries(port_slippi_loopback_test PRIVATE port_enet port_build_options Threads::Threads)
+  if(APPLE)
+    enable_language(OBJCXX)
+    target_sources(port_slippi_loopback_test PRIVATE runtime/hle/slippi_ws_apple.mm)
+    set_source_files_properties(runtime/hle/slippi_ws_apple.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    target_link_libraries(port_slippi_loopback_test PRIVATE "-framework Foundation" "-framework Network")
+    # Live check against the real matchmaking service (not a ctest): port_mm_probe <user_dir> [seconds] [mode]
+    add_executable(port_mm_probe tests/mm_probe.cpp runtime/hle/slippi_net.cpp runtime/hle/slippi_matchmaking_protocol.cpp
+      runtime/hle/slippi_text.cpp runtime/hle/slippi_ws_apple.mm runtime/hle/slippi_input_suggestions.cpp runtime/hle/slippi_match_quality.cpp)
+    target_compile_definitions(port_mm_probe PRIVATE MM_PROBE_STANDALONE=1)
+    target_include_directories(port_mm_probe PRIVATE runtime/hle runtime/host runtime/ppc third_party)
+    target_link_libraries(port_mm_probe PRIVATE port_enet port_build_options Threads::Threads Iconv::Iconv
+      "-framework Foundation" "-framework Network")
+  endif()
   if(NOT WIN32)
     target_link_libraries(port_slippi_loopback_test PRIVATE Iconv::Iconv)
   endif()
@@ -319,7 +332,7 @@ set(PORT_PORTABLE_RUNTIME_SOURCES
   runtime/hle/ax_ucode.cpp runtime/hle/exi_slippi.cpp
   runtime/hle/hle_card.cpp runtime/hle/hle_dvd.cpp runtime/hle/dvd_read_worker.cpp runtime/hle/hle_os.cpp
   runtime/hle/hle_pad.cpp runtime/hle/pad_rumble.cpp runtime/hle/hle_stubs.cpp runtime/hle/jukebox.cpp
-  runtime/hle/slippi_net.cpp runtime/hle/slippi_net_diag.cpp runtime/hle/slippi_online.cpp runtime/hle/slippi_offline.cpp runtime/hle/slippi_input_suggestions.cpp runtime/hle/slippi_match_quality.cpp
+  runtime/hle/slippi_net.cpp runtime/hle/slippi_matchmaking_protocol.cpp runtime/hle/slippi_net_diag.cpp runtime/hle/slippi_online.cpp runtime/hle/slippi_offline.cpp runtime/hle/slippi_input_suggestions.cpp runtime/hle/slippi_match_quality.cpp
   runtime/hle/slippi_playback.cpp runtime/hle/slippi_report.cpp
   runtime/host/host.cpp runtime/host/host_log.cpp runtime/host/vcdiff.cpp runtime/host/headless_options.cpp runtime/host/input_script.cpp
   runtime/host/file_identity.cpp runtime/host/headless_manifest.cpp
@@ -356,7 +369,8 @@ endfunction()
 if(MELEE_BUILD_PORT_HEADLESS)
   add_library(runtime_headless STATIC ${PORT_PORTABLE_RUNTIME_SOURCES}
     runtime/host/input_headless.cpp runtime/host/window_headless.cpp runtime/host/audio_headless.cpp
-    runtime/hle/discord_rpc.cpp runtime/hle/slippi_login.cpp runtime/hle/slippi_http_apple.mm)
+    runtime/hle/discord_rpc.cpp runtime/hle/slippi_login.cpp runtime/hle/slippi_http_apple.mm runtime/hle/slippi_ws_apple.mm)
+  set_source_files_properties(runtime/hle/slippi_ws_apple.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   target_include_directories(runtime_headless PUBLIC runtime/ppc runtime/host runtime/hle runtime/gx
     "${PORT_GEN}" "${PROJECT_SOURCE_DIR}/native" third_party)
   target_compile_definitions(runtime_headless PUBLIC MELEE_PORT_OFFLINE=1)
@@ -484,7 +498,7 @@ if(MELEE_BUILD_PORT_METAL)
     runtime/host/input_sdl.cpp runtime/host/audio_sdl.cpp runtime/host/gc_adapter_none.cpp
     runtime/host/window_metal.cpp runtime/host/metal_frontend.cpp runtime/host/metal_frontend_aurora.cpp
     runtime/gx/gx_aurora.cpp runtime/gx/gx_aurora_bridge.cpp
-    runtime/hle/discord_rpc.cpp runtime/hle/slippi_login.cpp runtime/hle/slippi_http_apple.mm
+    runtime/hle/discord_rpc.cpp runtime/hle/slippi_login.cpp runtime/hle/slippi_http_apple.mm runtime/hle/slippi_ws_apple.mm
     "${PORT_METAL_APPLE_FALLBACK}")
   target_include_directories(runtime_metal PUBLIC runtime/ppc runtime/host runtime/hle runtime/gx
     "${PORT_GEN}" "${PROJECT_SOURCE_DIR}/native" third_party)
@@ -501,7 +515,7 @@ if(MELEE_BUILD_PORT_METAL)
   # Discord Rich Presence over the local IPC socket: exi_slippi's replay events
   # feed it, the login tables name characters and stages, and the HTTP transport
   # is the same Apple one the headless and macOS application binaries link.
-  set_source_files_properties(runtime/hle/slippi_http_apple.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  set_source_files_properties(runtime/hle/slippi_http_apple.mm runtime/hle/slippi_ws_apple.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   target_link_libraries(runtime_metal PUBLIC "-framework Foundation" ${MELEE_METALFX_FRAMEWORK})
   add_dependencies(runtime_metal port_verify_generated)
 
@@ -558,11 +572,11 @@ if(MELEE_BUILD_PORT_METAL)
   # The application renders with the native Metal backend and talks to SDL3 directly;
   # Aurora is only built here for its vendored SDL3.
   add_library(runtime_mac STATIC ${PORT_PORTABLE_RUNTIME_SOURCES} runtime/hle/slippi_text.cpp
-    runtime/hle/slippi_http_apple.mm runtime/hle/slippi_login.cpp runtime/hle/slippi_history.cpp
+    runtime/hle/slippi_http_apple.mm runtime/hle/slippi_ws_apple.mm runtime/hle/slippi_login.cpp runtime/hle/slippi_history.cpp
     runtime/host/window_sdl.cpp runtime/host/window_fold_apple.mm runtime/host/input_config.cpp runtime/host/dashboard.cpp runtime/host/audio_sdl.cpp runtime/host/haptics_apple.mm runtime/host/apple_power.mm runtime/host/controller_rate.mm runtime/host/lossless_xinput.cpp runtime/host/game_menu.cpp runtime/host/notify_apple.mm runtime/hle/discord_rpc.cpp runtime/host/gc_diagram.cpp
     ${PORT_GC_ADAPTER_SOURCE} ${PORT_APPLE_LAUNCHER_SOURCE} ${PORT_APPLE_EXTRA_SOURCES}
     runtime/gx/gx_metal.mm runtime/gx/gx_msl.cpp)
-  set_source_files_properties(runtime/gx/gx_metal.mm runtime/hle/slippi_http_apple.mm runtime/host/haptics_apple.mm runtime/host/apple_power.mm runtime/host/controller_rate.mm runtime/host/notify_apple.mm
+  set_source_files_properties(runtime/gx/gx_metal.mm runtime/hle/slippi_http_apple.mm runtime/hle/slippi_ws_apple.mm runtime/host/haptics_apple.mm runtime/host/apple_power.mm runtime/host/controller_rate.mm runtime/host/notify_apple.mm
     ${PORT_APPLE_LAUNCHER_SOURCE} PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   target_include_directories(runtime_mac PUBLIC runtime/ppc runtime/host runtime/hle runtime/gx
     "${PORT_GEN}" "${PROJECT_SOURCE_DIR}/native" third_party)
@@ -670,7 +684,7 @@ set(RUNTIME_SOURCES
   runtime/hle/ax_ucode.cpp runtime/hle/exi_slippi.cpp
   runtime/hle/hle_card.cpp runtime/hle/hle_dvd.cpp runtime/hle/dvd_read_worker.cpp runtime/hle/hle_os.cpp runtime/hle/hle_pad.cpp
   runtime/hle/hle_stubs.cpp runtime/hle/pad_rumble.cpp runtime/hle/jukebox.cpp runtime/hle/slippi_net.cpp runtime/hle/slippi_input_suggestions.cpp runtime/hle/slippi_match_quality.cpp
-  runtime/hle/slippi_online.cpp runtime/hle/slippi_offline.cpp runtime/hle/slippi_playback.cpp runtime/hle/slippi_report.cpp
+  runtime/hle/slippi_matchmaking_protocol.cpp runtime/hle/slippi_online.cpp runtime/hle/slippi_offline.cpp runtime/hle/slippi_playback.cpp runtime/hle/slippi_report.cpp
   runtime/hle/slippi_text.cpp
   runtime/host/audio.cpp runtime/host/gc_adapter.cpp runtime/host/host.cpp runtime/host/host_log.cpp
   runtime/host/updater.cpp runtime/host/vcdiff.cpp runtime/host/window.cpp
