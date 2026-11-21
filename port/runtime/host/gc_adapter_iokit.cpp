@@ -10,6 +10,7 @@
 // the report stream and shown in the dashboard, because some ports and hubs refuse the request.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "host.h"
+#include "gc_adapter_reports.h"
 #include "window.h"
 
 #include <CoreFoundation/CoreFoundation.h>
@@ -48,6 +49,7 @@ bool g_have_report = false;
 std::chrono::steady_clock::time_point g_next_scan;
 bool g_logged_missing = false;
 struct Origin { bool set = false; uint8_t sx = 128, sy = 128, cx = 128, cy = 128, tl = 0, tr = 0; } g_origin[4];
+gc_adapter_reports::State g_reports;   // input suggestions: game poll counts and the report callback
 std::atomic<uint8_t> g_rumble[4]{};
 std::atomic<bool> g_rumble_dirty{false};
 std::atomic<int> g_interval_ms{0};        // polling interval the host accepted (from the pipe properties)
@@ -82,11 +84,17 @@ void reader_thread() {
     if (r == kIOReturnSuccess) {
       failures = 0;
       if (size == 37 && buf[0] == 0x21) {
-        std::lock_guard<std::mutex> lk(g_mutex);
-        std::memcpy(g_report, buf, 37); g_have_report = true;
-        uint32_t ports = 0;
-        for (int p = 0; p < 4; ++p) if (buf[1 + p * 9] & 0x30) ports |= 1u << p;
-        g_ports.store(ports);
+        uint64_t counts[4]; uint8_t payload[37];
+        bool report = false;
+        {
+          std::lock_guard<std::mutex> lk(g_mutex);
+          std::memcpy(g_report, buf, 37); g_have_report = true;
+          uint32_t ports = 0;
+          for (int p = 0; p < 4; ++p) if (buf[1 + p * 9] & 0x30) ports |= 1u << p;
+          g_ports.store(ports);
+          report = gc_adapter_reports::capture(g_reports, g_report, counts, payload);
+        }
+        if (report) gc_adapter_reports::deliver(g_reports, counts, payload);   // outside the lock: the game's reads never wait on it
       }
       ++reports;
       const auto now = std::chrono::steady_clock::now();
@@ -128,6 +136,7 @@ void close_adapter() {
   std::lock_guard<std::mutex> lk(g_mutex);
   g_have_report = false; g_ports.store(0); g_report_hz.store(0.0); g_interval_ms.store(0);
   for (auto& o : g_origin) o.set = false;
+  g_reports.game_ports.store(0);
 }
 
 template <class T> T** query(IOCFPlugInInterface** plug, CFUUIDRef id) {
@@ -224,18 +233,28 @@ uint32_t gcadapter_poll(PadState out[4]) {
     if (!open_adapter()) return 0;
   }
   uint8_t rep[37];
+  Origin origins[4];
   {
+    // The report, the game's poll count and the origins change together, under the lock the reader stores reports
+    // under: a report stamped with poll count N was stored after poll N read its own.
     std::lock_guard<std::mutex> lk(g_mutex);
     if (!g_have_report) return 0;
     std::memcpy(rep, g_report, 37);
+    gc_adapter_reports::count_game_poll(g_reports);
+    for (int port = 0; port < 4; ++port) {
+      const uint8_t* c = rep + 1 + port * 9;
+      Origin& o = g_origin[port];
+      if (!(c[0] & 0x30)) o.set = false;
+      else if (!o.set) { o.set = true; o.sx = c[3]; o.sy = c[4]; o.cx = c[5]; o.cy = c[6]; o.tl = c[7]; o.tr = c[8]; }
+      origins[port] = o;
+    }
   }
   uint32_t mask = 0;
   for (int port = 0; port < 4; ++port) {
     const uint8_t* c = rep + 1 + port * 9;
     uint8_t status = c[0] & 0x30;
-    if (!status) { g_origin[port].set = false; continue; }
-    Origin& o = g_origin[port];
-    if (!o.set) { o.set = true; o.sx = c[3]; o.sy = c[4]; o.cx = c[5]; o.cy = c[6]; o.tl = c[7]; o.tr = c[8]; }
+    if (!status) continue;
+    const Origin& o = origins[port];
     PadState& p = out[port];
     std::memset(&p, 0, sizeof p);
     p.err = 0;
@@ -251,6 +270,7 @@ uint32_t gcadapter_poll(PadState out[4]) {
     p.trig_r = (uint8_t)(c[8] > o.tr ? c[8] - o.tr : 0);
     mask |= 1u << port;
   }
+  if (g_game_pad_poll) g_reports.game_ports.store(mask);
   return mask;
 }
 
@@ -275,5 +295,22 @@ void gcadapter_recalibrate(int port) {
   else g_origin[port].set = false;
 }
 void gcadapter_shutdown() { close_adapter(); }
+
+void gcadapter_set_report_callback(GcAdapterReportCallback callback) { g_reports.callback.store(callback, std::memory_order_release); }
+uint64_t gcadapter_game_poll_count(int port) {
+  if (port < 0 || port > 3) return 0;
+  std::lock_guard<std::mutex> lk(g_mutex);
+  return g_reports.game_poll_counts[port];
+}
+bool gcadapter_feeds_game_port(int port) { return port >= 0 && port < 4 && (g_reports.game_ports.load() & (1u << port)); }
+bool gcadapter_game_origin(int port, uint8_t origin[6]) {
+  if (port < 0 || port > 3) return false;
+  std::lock_guard<std::mutex> lk(g_mutex);
+  const Origin& o = g_origin[port];
+  if (!o.set) return false;
+  origin[0] = o.sx; origin[1] = o.sy; origin[2] = o.cx; origin[3] = o.cy; origin[4] = o.tl; origin[5] = o.tr;
+  return true;
+}
+void gcadapter_set_game_input_replaced(bool replaced) { g_reports.replaced.store(replaced, std::memory_order_relaxed); }
 
 }  // namespace host

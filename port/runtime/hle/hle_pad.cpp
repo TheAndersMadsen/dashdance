@@ -87,7 +87,10 @@ HLE(PADRead) {
   }
 #endif
   host::PadState pads[4];
-  host::input_poll(pads);
+  {
+    struct GamePoll { GamePoll() { host::g_game_pad_poll = true; } ~GamePoll() { host::g_game_pad_poll = false; } } game_poll;   // the game's own read: counted for input suggestions (Slippi 3.7.0)
+    host::input_poll(pads);
+  }
   uint32_t base = ARG0, mask = 0;
   for (int i = 0; i < 4; ++i) {
     uint32_t p = base + i * 12;

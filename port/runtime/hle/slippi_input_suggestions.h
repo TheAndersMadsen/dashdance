@@ -58,10 +58,12 @@ void reset_remote(uint8_t remote_idx);
 void fill_predictions(uint8_t remote_idx, int32_t latest_frame, bool is_disconnected, const uint8_t* latest_pad,
                       uint8_t* out, size_t out_len);
 
-// The GameCube adapter as input suggestions sees it. Whether the game's controller on this port comes from the
+// The GameCube adapter as input suggestions sees it (slippi_input_suggestions_adapter.cpp). Whether the game's controller on this port comes from the
 // adapter; how many times the game has polled that port; and the origin (neutral) the adapter reported for it.
 bool adapter_has_port(uint8_t port);
 uint64_t adapter_game_poll_count(uint8_t port);
 bool adapter_origin(uint8_t port, uint8_t origin[6], uint8_t* analog_mode);
+// Routes the adapter read thread's reports to the live netplay client (NetplayClient::SendInputSuggestionForAdapterReport).
+void connect_adapter_reports();
 
 }  // namespace slippi::input_suggestions
