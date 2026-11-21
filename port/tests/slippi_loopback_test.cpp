@@ -10,6 +10,8 @@
 #include <memory>
 #include <vector>
 
+#include "slippi_net_test_stubs.h"
+
 namespace host { void log(const char*, ...) {} }
 
 namespace {

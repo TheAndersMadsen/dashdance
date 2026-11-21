@@ -227,6 +227,9 @@ class NetplayClient {
   std::unique_ptr<PlayerSelections> remote_chat_message_selection_;
 };
 
+namespace stun { struct Observation; }
+struct MmSession;   // slippi_net.cpp: one websocket matchmaking session (client.rs Session)
+
 class Matchmaking {
  public:
   enum OnlinePlayMode { RANKED = 0, UNRANKED = 1, DIRECT = 2, TEAMS = 3, PARTY = 4 };
@@ -242,6 +245,7 @@ class Matchmaking {
   ProcessState GetMatchmakeState() const { return state_; }
   std::string GetErrorMessage() const { return error_msg_; }
   bool IsSearching() const { return state_ == INITIALIZING || state_ == MATCHMAKING || state_ == OPPONENT_CONNECTING; }
+  bool IsInQueue() const { return in_queue_; }   // the service has accepted our ticket and we are waiting for opponents
   std::unique_ptr<NetplayClient> GetNetplayClient() { return std::move(netplay_client_); }
   int LocalPlayerIndex() const { return local_player_index_; }
   std::vector<UserInfo> GetPlayerInfo() const { return player_info_; }
@@ -259,13 +263,29 @@ class Matchmaking {
   void startMatchmaking();
   void handleMatchmaking();
   void handleConnecting();
-  void disconnectFromServer();
   void terminateMmConnection();
+  bool stunBindingRequest(uint32_t host, uint16_t port, stun::Observation& result);
+  void sendStunKeepalive();
+
+  // Public STUN servers used to learn the netplay socket's public address, tried in order until
+  // two have answered (two are needed to tell a cone NAT from a symmetric one). The non-Google
+  // entries are for networks that block Google.
+  static constexpr const char* STUN_SERVERS[][2] = {
+      {"stun.l.google.com", "19302"}, {"stun1.l.google.com", "19302"},
+      {"stun.cloudflare.com", "3478"}, {"global.stun.twilio.com", "3478"}};
+  // How often to send a packet from the netplay socket while queued so the NAT mapping the
+  // opponent will use does not expire.
+  static constexpr uint64_t STUN_KEEPALIVE_INTERVAL_MS = 15000;
 
   User* user_;
-  _ENetHost* client_ = nullptr;
-  _ENetPeer* server_ = nullptr;
-  bool is_mm_connected_ = false, is_mm_terminated_ = false;
+  _ENetHost* client_ = nullptr;   // bound to the netplay port for the duration of the queue; only its socket is used
+  uint32_t stun_host_ = 0;        // the server keepalives go to (network order), when has_stun_addr_
+  uint16_t stun_port_ = 0;
+  bool has_stun_addr_ = false;
+  uint64_t last_keepalive_ms_ = 0;
+  std::shared_ptr<MmSession> session_;   // the websocket conversation with the matchmaking service
+  std::atomic<bool> is_mm_terminated_{false};
+  std::atomic<bool> in_queue_{false};
   std::thread thread_;
   MatchSearchSettings search_settings_;
   std::atomic<ProcessState> state_{IDLE};

@@ -28,11 +28,16 @@ is retained; installed Launcher profile discovery has been removed everywhere.
   game/frame/end counts, truncated records and the once-per-game offline input
   marker at post-frame 1. Actual `.slp` parsing remains the independent gameplay
   acceptance source.
-- `slippi_matchmaking_protocol_test`: pure mock ticket/assignment fixtures,
-  preserving CP932 connect-code bytes, mode/version, global player slots, rank,
-  LAN/public-address choice, stages and items. Refusals and incomplete
-  assignments remain errors. This extracted helper is not yet wired into the
-  existing matchmaker at this checkpoint.
+- `slippi_matchmaking_protocol_test`: Slippi 3.7.0 matchmaking's pure parts: STUN
+  binding requests and responses (RFC 5769's sample IPv4 response, XOR over plain
+  MAPPED-ADDRESS, padding, foreign or error replies), NAT classification, the
+  join/resume/cancel/ping messages and the server message kinds, the match-result
+  parse (rank and mmr, bots, chat messages, LAN/public address choice, stages,
+  items) and the rank thresholds. `slippi_net.cpp` uses these helpers.
+- `port_mm_probe` (built with `MELEE_BUILD_PORT_TRANSPORT_TESTS` on macOS): the real
+  `Matchmaking` against the live service with a real user.json, cancelling as soon
+  as the ticket is queued (`unranked`) or holding a queue nobody can join (`direct`).
+  Not a ctest because it needs the network and an account.
 - Existing `native-slippi-services` Rust library: all 26 offline tests passed
   again (7 core/FFI, 8 lifecycle/mapping, 11 bounded-worker tests). Its actual
   release static library also passed the linked C lifecycle smoke test on
@@ -74,8 +79,8 @@ those integrations.
 | Offline EXI initialization | `online::init`, `slippi_offline.cpp` | Keep this target independent of native service activation. |
 | Native profile/session creation | C `native_slippi_services_create`; Rust `Config`, `SessionServices::new` | Supply the explicit canonical owned profile and explicit application/reference versions. Keep construction inert. |
 | `User` / `CMD_OPEN_LOGIN` / online status | C `enable_network`, `attempt_login`; Rust `user_summary`, `credentials` | Add typed summary/credential access to a service-thread adapter. ProfileLoaded means local parsing, not server authentication. Never discover another app's profile. |
-| Matchmaking ticket | Existing `Matchmaking::startMatchmaking`; extracted `protocol::create_ticket` | Replace the raw `User*` dependency with an owned session snapshot and wire the pure serializer. Keep credential-bearing ticket bytes off the simulation thread and logs. |
-| Ticket acknowledgement / assignment | Existing ENet matchmaking channel; `protocol::ticket_created`, `assigned_match` | Wire parsing before publishing a complete assignment. Preserve public/LAN choice, global ports, chat/rank fields, stage/item rules and mode/version. Publish immutable results back to the game thread. |
+| Matchmaking ticket | `Matchmaking::startMatchmaking` (STUN, then the websocket `join` from `protocol::join`) | Replace the raw `User*` dependency with an owned session snapshot and wire the pure serializer. Keep credential-bearing ticket bytes off the simulation thread and logs. |
+| Ticket acknowledgement / assignment | The websocket session in `slippi_net.cpp` (`joined`, `status`, `match`, `error`); `protocol::parse_server_message`, `match_result` | Wire parsing before publishing a complete assignment. Preserve public/LAN choice, global ports, chat/rank fields, stage/item rules and mode/version. Publish immutable results back to the game thread. |
 | Direct P2P inputs / rollback | Existing `NetplayClient`, `slippi_online.cpp` savestates | Retain ENet wire messages; resolve cross-thread ownership before broader tests. Validate selections, chat, game-prep, teams, time sync, packet loss/reordering and rollback against the pinned stock client. |
 | `CMD_REPORT_GAME` | Rust `GameResult`, `PlayerResult`, `reference::map_report`, `ServiceWorker::FinalizedReport` | Extend the C interface for all existing report fields and all four global player slots. Move blocking work to the existing bounded worker. Stable host event IDs must survive rollback and distinguish ranked recovery events. |
 | Replay report association | Rust `ServiceWorker::ReplayData` and actual upstream reporter | Forward the original EXI recording stream, including 0x35 resets and repeated rollback records. The Rust reporter uses raw replay association; the legacy C++ `.slp` filename is not a substitute. |
