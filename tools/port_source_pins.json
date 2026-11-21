@@ -18,11 +18,17 @@
     "sha1": "08e0bf20134dfcb260699671004527b2d6bb1a45"
   },
   "slippi": {
+    "source": {
+      "url": "https://github.com/project-slippi/Ishiiruka.git",
+      "tag": "v3.7.0",
+      "commit": "07b2d287a1f074942811d13b3c990fa29401ba7c",
+      "note": "GameSettings/GALE01r2.ini and GameFiles/GALE01 are copied byte for byte from Data/Sys at this tag; bootloader.gct and codehandler.bin are unchanged there since v3.6.4."
+    },
     "sys_dir": "port/slippi_sys",
     "files_sha256": {
       "codehandler.bin": "4fff42b192e95b353da28f6c3f0afa002bfbd2caf7c4bfb1187304e2406ccb0c",
       "bootloader.gct": "6beeb0d74f58eb7825ed9ceb60e3037f9a55f6265efc3a2085f3073ffe6b3680",
-      "GameSettings/GALE01r2.ini": "b30b294df5c0d92deb3129afdfbc894a48aabeb1bce0cf92cce8c4e5408a2587"
+      "GameSettings/GALE01r2.ini": "2392fbc9da281eb8c8ceb5aa13222d45ea83e3cfd38389fec6e0705aead49609"
     },
     "gct_base": "0x8065CC80",
     "gct_base_evidence": "Upstream README.md profile; observed at runtime in a 600-retrace strict offline arm64 run of artifact 219e75d858125b254734a3a52603921e13bb8a03f3732d0e5333c4df234823eb. New artifacts require their own runtime verification.",
@@ -33,6 +39,28 @@
       "retraces": 600,
       "missing_aot_targets": 0,
       "interpreted_instructions": 0
+    },
+    "sys_files_sha256": {
+      "codehandler.bin": "4fff42b192e95b353da28f6c3f0afa002bfbd2caf7c4bfb1187304e2406ccb0c",
+      "bootloader.gct": "6beeb0d74f58eb7825ed9ceb60e3037f9a55f6265efc3a2085f3073ffe6b3680",
+      "README.md": "2bbcd95841a409c0fb78bb2a080acba9d0d76f504886a0ccf88fd8ebf1a741aa",
+      "GameSettings/GALE01r2.ini": "2392fbc9da281eb8c8ceb5aa13222d45ea83e3cfd38389fec6e0705aead49609",
+      "GameFiles/GALE01/MnSlMap.dat.diff": "43860c806406b85e05d312401548ef7b0da15e62d44bbd279ff2885e4ea3ec27",
+      "GameFiles/GALE01/GameSetup.dat": "7b3869a1f3097f6cce5a740f289a0278f5fdb5c55f199eab1df703d5266faa07",
+      "GameFiles/GALE01/SlippiCSS_gui.dat": "fe96bb798206d8090510292359fb65350da3f812ef5dbf44aa30b9f647d93e01",
+      "GameFiles/GALE01/SdSlChr.dat.diff": "0194bcbb4fd26df4e499edd52ea7a64743a493515b07d6114cf378c8720a9405",
+      "GameFiles/GALE01/GameSetup_gui.dat": "824002d8835bebec42caf637b948b4da6178e4341668b30e3d3a2122c892892b",
+      "GameFiles/GALE01/SdMenu.usd.diff": "00a92643e41af867dd22ba159f7ec022e6aa3b7288b537b2ba00cf162f5579cb",
+      "GameFiles/GALE01/MnExtAll.usd.diff": "c729c61a65d92aeaf4ab15ca7ec5a40ead336055b0defce9c74503e2651c9b18",
+      "GameFiles/GALE01/MnMaAll.usd.diff": "e0e261203e013f7e51c29f808165ca36dca10296c3e613b1b225e0a6d4978263",
+      "GameFiles/GALE01/MxScn.dat": "7012066e3e039b8f022582d59657d8206eebf13e4c39f4a56fe3b313cc9942bb",
+      "GameFiles/GALE01/MnMaAll.dat.diff": "4f38bfa9716064fd59315c26210ec6383b62ee0d4445beb9b6cca1f09134ea75",
+      "GameFiles/GALE01/SlippiCSS.dat": "f864eed3f494f1a1710760973f25a7f5be4bb3dc4fc4734c2a721ca62f4916f3",
+      "GameFiles/GALE01/MnSlMap.usd.diff": "dcf99eeaab8f981a2aad25e341eda79bc9b417dd098fc39ff20cb328fbc1510d",
+      "GameFiles/GALE01/SdSlChr.usd.diff": "fde2f393c405244f9100a0522a769d4fcce9e892dd9b87b0e0c38670ef132f38",
+      "GameFiles/GALE01/SdMenu.dat.diff": "b284732a79b787129704e81c110d9ac11210bc3e8f579e27e8e38525b656fe50",
+      "GameFiles/GALE01/MxDb.dat": "58e96852c9b6a1ec1fe53b5de6c307465a72684094d6dbcd16dd89f6a29b76c5",
+      "GameFiles/GALE01/MnExtAll.dat.diff": "b6df247ddf12d0118d4b1deaf1d3cf8878ebb4d60b29fda7ad6a324246b05e22"
     }
   }
 }

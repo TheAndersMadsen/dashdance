@@ -103,20 +103,28 @@ def main():
             if not path.is_file() or sha(path) != expected:
                 parser.error("Slippi input differs from the pinned upstream profile: " + str(path))
             slippi_inputs.append(path)
-    # Runtime GameFiles/diffs must match the same upstream source commit,
-    # including inventory. Do not accept a dirty replacement Sys tree.
-    tracked = subprocess.check_output(["git", "-C", str(ROOT), "ls-tree", "-r", "--name-only",
-        PINS["upstream"]["commit"], "--", str(sys_dir.relative_to(ROOT))], text=True).splitlines()
-    actual = {str((sys_dir / relative).relative_to(ROOT)) for relative in slippi_sys_hashes}
-    if actual != set(tracked):
-        parser.error("Slippi Sys file inventory differs from the pinned upstream commit")
-    for relative in tracked:
-        path = ROOT / relative
-        expected_blob = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse",
-            PINS["upstream"]["commit"] + ":" + relative], text=True).strip()
-        actual_blob = subprocess.check_output(["git", "-C", str(ROOT), "hash-object", str(path)], text=True).strip()
-        if expected_blob != actual_blob:
-            parser.error("Slippi runtime asset differs from the pinned upstream commit: " + relative)
+    # Runtime GameFiles/diffs must match the pinned Slippi release byte for byte, including inventory
+    # (tools/port_source_pins.json, slippi.source). Do not accept a dirty replacement Sys tree.
+    if not args.playback:
+        pinned = PINS["slippi"]["sys_files_sha256"]
+        if set(slippi_sys_hashes) != set(pinned):
+            parser.error("Slippi Sys file inventory differs from the pinned Slippi release")
+        for relative, expected in pinned.items():
+            if slippi_sys_hashes[relative] != expected:
+                parser.error("Slippi runtime asset differs from the pinned Slippi release: " + relative)
+    else:
+        # The playback Sys tree still matches the pinned upstream source commit, including inventory.
+        tracked = subprocess.check_output(["git", "-C", str(ROOT), "ls-tree", "-r", "--name-only",
+            PINS["upstream"]["commit"], "--", str(sys_dir.relative_to(ROOT))], text=True).splitlines()
+        actual = {str((sys_dir / relative).relative_to(ROOT)) for relative in slippi_sys_hashes}
+        if actual != set(tracked):
+            parser.error("Slippi Sys file inventory differs from the pinned upstream commit")
+        for relative in tracked:
+            expected_blob = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse",
+                PINS["upstream"]["commit"] + ":" + relative], text=True).strip()
+            actual_blob = subprocess.check_output(["git", "-C", str(ROOT), "hash-object", str(ROOT / relative)], text=True).strip()
+            if expected_blob != actual_blob:
+                parser.error("Slippi runtime asset differs from the pinned upstream commit: " + relative)
     before_hashes = source_hashes()
     command = [sys.executable, ROOT / "port/recomp/recomp.py", "--dol", dol,
                "--symbols", decomp / "config/GALE01/symbols.txt", "--out", generated]
