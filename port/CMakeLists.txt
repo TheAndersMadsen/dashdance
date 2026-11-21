@@ -322,7 +322,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PROJECT_SOURCE
 # a portable executable through a source glob.
 set(PORT_PORTABLE_RUNTIME_SOURCES
   runtime/ppc/ppc_runtime.cpp runtime/ppc/interp.cpp runtime/ppc/numeric.cpp
-  runtime/hle/ax_ucode.cpp runtime/hle/exi_slippi.cpp
+  runtime/hle/ax_ucode.cpp runtime/hle/exi_slippi.cpp runtime/hle/slippi_gamefile_links.cpp
   runtime/hle/hle_card.cpp runtime/hle/hle_dvd.cpp runtime/hle/dvd_read_worker.cpp runtime/hle/hle_os.cpp
   runtime/hle/hle_pad.cpp runtime/hle/pad_rumble.cpp runtime/hle/hle_stubs.cpp runtime/hle/jukebox.cpp
   runtime/hle/slippi_net.cpp runtime/hle/slippi_net_diag.cpp runtime/hle/slippi_online.cpp runtime/hle/slippi_offline.cpp
@@ -673,7 +673,7 @@ if(MELEE_BUILD_EXPERIMENTAL_PORT)
 # Host runtime: CPU helpers, memory, HLE, host services.
 set(RUNTIME_SOURCES
   runtime/ppc/ppc_runtime.cpp runtime/ppc/interp.cpp runtime/ppc/numeric.cpp
-  runtime/hle/ax_ucode.cpp runtime/hle/exi_slippi.cpp
+  runtime/hle/ax_ucode.cpp runtime/hle/exi_slippi.cpp runtime/hle/slippi_gamefile_links.cpp
   runtime/hle/hle_card.cpp runtime/hle/hle_dvd.cpp runtime/hle/dvd_read_worker.cpp runtime/hle/hle_os.cpp runtime/hle/hle_pad.cpp
   runtime/hle/hle_stubs.cpp runtime/hle/pad_rumble.cpp runtime/hle/jukebox.cpp runtime/hle/slippi_net.cpp
   runtime/hle/slippi_online.cpp runtime/hle/slippi_offline.cpp runtime/hle/slippi_playback.cpp runtime/hle/slippi_report.cpp
