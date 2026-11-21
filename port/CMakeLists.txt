@@ -68,6 +68,12 @@ if(NOT WIN32)
 endif()
 add_test(NAME port_slippi_text COMMAND port_slippi_text_test)
 
+# Slippi 3.7.0 game-file links (slp: symbols in HSD archives), no game data needed.
+add_executable(port_slippi_gamefile_links_test tests/slippi_gamefile_links_test.cpp runtime/hle/slippi_gamefile_links.cpp)
+target_include_directories(port_slippi_gamefile_links_test PRIVATE runtime/hle)
+target_compile_features(port_slippi_gamefile_links_test PRIVATE cxx_std_17)
+add_test(NAME port_slippi_gamefile_links COMMAND port_slippi_gamefile_links_test)
+
 add_executable(port_portable_file_test tests/portable_file_test.cpp)
 target_include_directories(port_portable_file_test PRIVATE runtime/host)
 add_test(NAME port_portable_files COMMAND port_portable_file_test)
