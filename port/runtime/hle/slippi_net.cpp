@@ -9,6 +9,7 @@
 #if !defined(MELEE_PORT_OFFLINE) || !MELEE_PORT_OFFLINE
 #include "host.h"
 #include "slippi_net_diag.h"
+#include "slippi_input_suggestions.h"
 #if defined(_WIN32)
 #define NOMINMAX
 #include <winsock2.h>
@@ -258,6 +259,8 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
       if (!(packet >> frame) || !(packet >> packet_player_port) || !(packet >> checksum_frame) || !(packet >> checksum)) { host::log("slippi: pad packet too small"); break; }
       uint8_t pidx = PlayerIdxFromPort(packet_player_port);
       if (pidx >= remote_player_count_) { host::log("slippi: pad packet with invalid player idx %u", pidx); break; }
+      // We have told the other players which inputs we have for this player, so that can't change anymore.
+      if (!player_active_[packet_player_port].load(std::memory_order_acquire)) break;
       const int pad_data_offset = 14;
       int conn_idx = 0;
       for (int i = 0; i < (int)server_.size(); ++i)
@@ -276,7 +279,7 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
       }
       FrameTiming timing = last_frame_timing_[pidx];
       if (!has_game_started_) { timing.frame = 0; timing.time_us = cur_time; }
-      int64_t opponent_send_time_us = (int64_t)cur_time - (int64_t)(ping_us_[pidx] / 2);
+      int64_t opponent_send_time_us = (int64_t)cur_time - (int64_t)(ping_us_[pidx].load(std::memory_order_relaxed) / 2);
       int64_t frame_diff_offset_us = 16683 * (int64_t)(timing.frame - frame);
       int64_t time_offset_us = opponent_send_time_us - (int64_t)timing.time_us + frame_diff_offset_us;
       auto& fod = frame_offset_data_[pidx];
@@ -289,12 +292,15 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
         const uint8_t* data = packet.data();
         int32_t head_frame = remote_pad_queue_[pidx].empty() ? 0 : remote_pad_queue_[pidx].front()->frame;
         inputs_to_copy = (int64_t)frame - head_frame;
-        if (pad_data_offset + inputs_to_copy * PAD_DATA_SIZE > (int64_t)packet.size()) { host::log("slippi: pad packet too small for %lld inputs", (long long)inputs_to_copy); break; }
+        if (pad_data_offset + inputs_to_copy * PAD_WIRE_SIZE > (int64_t)packet.size()) { host::log("slippi: pad packet too small for %lld inputs", (long long)inputs_to_copy); break; }
         if (inputs_to_copy > 128) { host::log("slippi: pad packet with too many frames (%lld)", (long long)inputs_to_copy); break; }
         for (int64_t i = inputs_to_copy - 1; i >= 0; --i)
-          remote_pad_queue_[pidx].push_front(std::make_unique<Pad>((int32_t)(frame - i), &data[pad_data_offset + i * PAD_DATA_SIZE]));
+          AddRemotePad(pidx, (int32_t)(frame - i), &data[pad_data_offset + i * PAD_WIRE_SIZE]);
         remote_checksums_[pidx] = {checksum_frame, checksum};
       }
+      // Let input suggestions check their predictions against the real inputs.
+      for (int64_t i = inputs_to_copy - 1; i >= 0; --i)
+        input_suggestions::on_remote_input(pidx, (int32_t)(frame - i), packet.data() + pad_data_offset + i * PAD_WIRE_SIZE);
       if (inputs_to_copy > 0) {
         Packet ack;
         ack << (uint8_t)NP_MSG_SLIPPI_PAD_ACK << frame << player_idx_;
@@ -316,12 +322,11 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
       if (timers.empty() || timers.front().frame != frame) break;
       uint64_t send_time = timers.front().time_us;
       timers.pop_front();
-      ping_us_[pidx] = time_us() - send_time;
-      net_diag::on_ack(ping_us_[pidx]);
-      ping_sample_sum_us_.fetch_add(ping_us_[pidx], std::memory_order_relaxed);
-      ping_sample_count_.fetch_add(1, std::memory_order_relaxed);
-      if (pidx == 0) host::set_online_ping_ms((int)(ping_us_[0] / 1000));
-      if (frame % 600 == 0 && pidx == 0) host::log("slippi: ping %llu ms", (unsigned long long)(ping_us_[0] / 1000));
+      const uint64_t ping = time_us() - send_time;
+      ping_us_[pidx].store(ping, std::memory_order_relaxed);
+      net_diag::on_ack(ping);
+      if (pidx == 0) host::set_online_ping_ms((int)(ping / 1000));
+      if (frame % 600 == 0 && pidx == 0) host::log("slippi: ping %llu ms", (unsigned long long)(ping / 1000));
       break;
     }
     case NP_MSG_SLIPPI_MATCH_SELECTIONS: {
@@ -332,19 +337,70 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
         host::log("slippi: received selections from player %u (char %u color %u stage %u)", s->player_idx, s->character_id, s->character_color, s->stage_id);
         match_info_.remote[idx].Merge(*s);
         has_game_started_ = false;
-        remote_pad_queue_[idx].clear();
+        {
+          std::lock_guard<std::mutex> lk(pad_mutex_);
+          remote_pad_queue_[idx].clear();
+          remote_pad_history_[idx].clear();
+        }
+        input_suggestions::reset_remote(idx);
       }
+      break;
+    }
+    case NP_MSG_SLIPPI_PAD_SUGGESTION: {
+      uint8_t packet_player_port; int32_t target_frame; uint32_t seq;
+      if (!(packet >> packet_player_port) || !(packet >> target_frame) || !(packet >> seq)) { host::log("slippi: input suggestion packet too small"); break; }
+      const size_t pad_data_offset = 10;   // message id, port, target frame and seq come before the pad
+      if (packet.size() < pad_data_offset + PAD_INPUT_SIZE) { host::log("slippi: input suggestion packet too small to read pad"); break; }
+      uint8_t pidx = PlayerIdxFromPort(packet_player_port);
+      if (pidx >= remote_player_count_) { host::log("slippi: input suggestion with invalid player idx %u", pidx); break; }
+      input_suggestions::on_remote_suggestion(pidx, target_frame, seq, packet.data() + pad_data_offset);
+      break;
+    }
+    case NP_MSG_SLIPPI_PLAYER_DROP: {
+      uint8_t sender_port, dropped_port, input_count; int32_t last_frame;
+      if (!(packet >> sender_port) || !(packet >> dropped_port) || !(packet >> last_frame) || !(packet >> input_count)) { host::log("slippi: player drop packet too small"); break; }
+      const size_t inputs_offset = 8;   // message id, ports, last frame and input count come before the inputs
+      if (packet.size() < inputs_offset + (size_t)input_count * PAD_WIRE_SIZE) { host::log("slippi: player drop packet too small to read inputs"); break; }
+      if (sender_port == player_idx_ || sender_port == dropped_port || last_frame < 0 || sender_port >= PLAYER_COUNT_MAX ||
+          dropped_port >= PLAYER_COUNT_MAX || PlayerIdxFromPort(sender_port) >= remote_player_count_ ||
+          PlayerIdxFromPort(dropped_port) >= remote_player_count_) {
+        host::log("slippi: invalid player drop packet (sender %u, dropped %u, last frame %d)", sender_port, dropped_port, last_frame);
+        break;
+      }
+      // The other players take care of removing us if this is about us. A player we already lost has no say, or else two
+      // players that lost their connection to each other would take each other out.
+      if (dropped_port == player_idx_ || !player_active_[sender_port].load(std::memory_order_acquire)) break;
+      // Losing a player to anyone means losing them to everyone, even if we are still connected to them. This also
+      // reports what we have for them to the other players.
+      ForceDisconnectPlayer(dropped_port);
+      ProcessPlayerDrops();
+      const int32_t despawn = despawn_frames_[dropped_port].load(std::memory_order_acquire);
+      if (despawn != 0) {
+        if (last_frame + DROP_DESPAWN_FRAMES > despawn)
+          host::log("slippi: report about player %u came too late (last frame %d, despawn frame %d)", dropped_port, last_frame, despawn);
+        break;
+      }
+      AddPlayerDropReportInputs(PlayerIdxFromPort(dropped_port), last_frame, input_count, packet.data() + inputs_offset);
       break;
     }
     case NP_MSG_SLIPPI_CHAT_MESSAGE: {
       auto s = ReadChatMessage(packet);
-      if (!s->error) remote_chat_message_selection_ = std::move(s);
+      if (!s->error) {
+        std::lock_guard<std::mutex> lk(chat_mutex_);   // the CPU thread takes it in GetSlippiRemoteChatMessage
+        remote_chat_message_.message_id = s->message_id;
+        remote_chat_message_.player_idx = s->player_idx;
+      }
       break;
     }
     case NP_MSG_SLIPPI_CONN_SELECTED: break;
     case NP_MSG_SLIPPI_COMPLETE_STEP: {
       GamePrepStepResults r;
-      packet >> r.step_idx >> r.char_selection >> r.char_color_selection >> r.stage_selections[0] >> r.stage_selections[1];
+      if (!(packet >> r.step_idx) || !(packet >> r.char_selection) || !(packet >> r.char_color_selection) ||
+          !(packet >> r.stage_selections[0]) || !(packet >> r.stage_selections[1])) { host::log("slippi: complete step packet too small"); break; }
+      // The opponent sends one per game prep step and the game takes them off as it asks, so only a few ever wait. The
+      // cap keeps a peer flooding step packets from growing the queue forever.
+      std::lock_guard<std::mutex> lk(game_prep_mutex_);
+      if (game_prep_step_queue_.size() >= 32) { host::log("slippi: game prep step queue is full, dropping the oldest step"); game_prep_step_queue_.pop_front(); }
       game_prep_step_queue_.push_back(r);
       break;
     }
@@ -376,6 +432,10 @@ std::unique_ptr<PlayerSelections> NetplayClient::ReadSelections(Packet& p) {
 std::unique_ptr<PlayerSelections> NetplayClient::ReadChatMessage(Packet& p) {
   auto s = std::make_unique<PlayerSelections>();
   if (!(p >> s->message_id) || !(p >> s->player_idx)) { s->error = true; return s; }
+  // The game uses this port as is to show who sent the message, so it has to be one of the remote players.
+  if (s->player_idx == player_idx_ || s->player_idx >= PLAYER_COUNT_MAX || PlayerIdxFromPort(s->player_idx) >= remote_player_count_) {
+    host::log("slippi: chat message with invalid player port %u", s->player_idx); s->error = true; return s;
+  }
   static const int allowed[] = {136, 129, 130, 132, 34, 40, 33, 36, 72, 66, 68, 65, 24, 18, 20, 17, CHAT_MSG_CHAT_DISABLED};
   bool ok = false;
   for (int a : allowed) if (a == s->message_id) ok = true;
@@ -393,10 +453,18 @@ void NetplayClient::Send(Packet& packet) {
     uint8_t mid = packet.data()[0];
     enet_uint32 flags = ENET_PACKET_FLAG_RELIABLE;
     uint8_t channel = 0;
-    if (mid == NP_MSG_SLIPPI_PAD || mid == NP_MSG_SLIPPI_PAD_ACK) { flags = ENET_PACKET_FLAG_UNSEQUENCED; channel = 1; }
+    if (mid == NP_MSG_SLIPPI_PAD || mid == NP_MSG_SLIPPI_PAD_ACK || mid == NP_MSG_SLIPPI_PAD_SUGGESTION) { flags = ENET_PACKET_FLAG_UNSEQUENCED; channel = 1; }
     ENetPacket* epac = enet_packet_create(packet.data(), packet.size(), flags);
     enet_peer_send(server_[i], channel, epac);
   }
+}
+
+// By default ENet deliberately drops unreliable packets while round trip time is rising, and pads and acks are all
+// unreliable: those drops turn a latency increase into gaps in the opponent's inputs, which stalls. Our traffic is far
+// too small for backing off to relieve congestion. A deceleration of 0 keeps the throttle at full, and ENet sends the
+// setting to the peer too, so it stops throttling what it sends us (Slippi 3.7.0).
+static void disable_packet_throttle_drops(ENetPeer* peer) {
+  enet_peer_throttle_configure(peer, ENET_PEER_PACKET_THROTTLE_INTERVAL, ENET_PEER_PACKET_THROTTLE_ACCELERATION, 0);
 }
 
 void NetplayClient::Disconnect() {
@@ -451,6 +519,7 @@ void NetplayClient::ThreadFunc() {
         case ENET_EVENT_TYPE_CONNECT: {
           if (!ev.peer) break;
           log_peer("connected", client_, ev.peer, false, ev.data);
+          disable_packet_throttle_drops(ev.peer);
           int early_idx = 0;
           for (int i = 0; i < (int)remote_addrs.size(); ++i)
             if (remote_addrs[i].host == ev.peer->address.host && remote_addrs[i].port == ev.peer->address.port) { early_idx = i; break; }
@@ -493,6 +562,7 @@ void NetplayClient::ThreadFunc() {
 
   while (do_loop_.load()) {
     if (status_.load(std::memory_order_acquire) == ConnectStatus::DISCONNECTED) break;
+    const bool waiting_on_player_drop = ProcessPlayerDrops();
     for (auto& conn : active_connections_) {
       for (auto& peer : conn.second) {
         if (peer.second.is_disconnected || player_active_[peer.second.player_idx].load(std::memory_order_acquire)) continue;
@@ -502,7 +572,8 @@ void NetplayClient::ThreadFunc() {
     }
     ENetEvent ev;
     const uint64_t service_t0 = time_us();
-    int net = enet_host_service(client_, &ev, 250);
+    // The players can all be halted waiting on a dropped player, in which case no packets arrive to wake us up.
+    int net = enet_host_service(client_, &ev, waiting_on_player_drop ? 10 : 250);
     net_diag::on_service(time_us() - service_t0);
     for (;;) {
       std::unique_ptr<Packet> p;
@@ -552,11 +623,12 @@ void NetplayClient::ThreadFunc() {
               if (other.second.player_idx == player && !other.second.is_disconnected && other.first->state == ENET_PEER_STATE_CONNECTED) all_peers_gone = false;
           if (!all_peers_gone) host::log("slippi: a connection attempt to %x:%u expired; the player is still connected on another address", ev.peer->address.host, ev.peer->address.port);
         }
-        if (all_peers_gone && active_connections_.count(key) && active_connections_[key].count(ev.peer))
-          player_active_[active_connections_[key][ev.peer].player_idx].store(false, std::memory_order_release);
         bool connected_client = false;
         for (size_t i = 0; i < server_.size(); ++i)
           if (ev.peer->address.host == server_[i]->address.host && ev.peer->address.port == server_[i]->address.port) connected_client = true;
+        // Only a port we are actually connected to counts: losing a player makes everyone else drop them too (3.7.0).
+        if (connected_client && all_peers_gone && active_connections_.count(key) && active_connections_[key].count(ev.peer))
+          player_active_[active_connections_[key][ev.peer].player_idx].store(false, std::memory_order_release);
         if (connected_client && ev.data != 0) disconnect_reason_.store(ev.data, std::memory_order_release);
         host::log("slippi: disconnect from %x:%u (all peers gone: %d, connected client: %d)", ev.peer->address.host, ev.peer->address.port, all_peers_gone, connected_client);
         if (connected_client && all_peers_gone && AreAllConnectionsDisconnected()) do_loop_.store(false);
@@ -564,11 +636,19 @@ void NetplayClient::ThreadFunc() {
       }
       case ENET_EVENT_TYPE_CONNECT: {
         log_peer("connected late", client_, ev.peer, false, ev.data);
+        disable_packet_throttle_drops(ev.peer);
         int late_idx = 0;
         for (int i = 0; i < (int)server_.size(); ++i)
           if (server_[i]->address.host == ev.peer->address.host && server_[i]->address.port == ev.peer->address.port) { late_idx = i; break; }
         ActiveConnectionInfo info;
         info.player_idx = match_info_.remote[late_idx].player_idx;
+        // A dropped player stays dropped: the other players have already moved on without them.
+        if (player_drop_times_ms_[info.player_idx] != 0) {
+          info.is_disconnected = true;
+          active_connections_[peer_key(ev.peer)][ev.peer] = info;
+          enet_peer_disconnect(ev.peer, 0);
+          break;
+        }
         active_connections_[peer_key(ev.peer)][ev.peer] = info;
         player_active_[info.player_idx].store(true, std::memory_order_release);
         break;
@@ -588,7 +668,7 @@ void NetplayClient::StartSlippiGame() {
     ack_timers_[i].clear();
   }
   is_desync_recovery_ = false;
-  game_prep_step_queue_.clear();
+  { std::lock_guard<std::mutex> lk(game_prep_mutex_); game_prep_step_queue_.clear(); }
   match_info_.Reset();
 }
 
@@ -610,7 +690,7 @@ void NetplayClient::SendSlippiPad(std::unique_ptr<Pad> pad) {
   int32_t frame = local_pad_queue_.front()->frame;
   auto spac = std::make_unique<Packet>();
   *spac << (uint8_t)NP_MSG_SLIPPI_PAD << frame << player_idx_ << local_pad_queue_.front()->checksum_frame << local_pad_queue_.front()->checksum;
-  for (auto& p : local_pad_queue_) spac->append(p->buf, PAD_DATA_SIZE);
+  for (auto& p : local_pad_queue_) spac->append(p->buf, PAD_WIRE_SIZE);   // the inputs and the RNG bits
   SendAsync(std::move(spac));
   uint64_t t = time_us();
   has_game_started_ = true;
@@ -619,6 +699,15 @@ void NetplayClient::SendSlippiPad(std::unique_ptr<Pad> pad) {
     std::lock_guard<std::mutex> lk(ack_mutex_);
     ack_timers_[i].push_back({frame, t});
   }
+}
+
+// Sends the newest local input between frames so opponents can predict with it. Called from the CPU thread and the
+// adapter read thread.
+void NetplayClient::SendSlippiPadSuggestion(int32_t target_frame, uint32_t seq, const uint8_t* pad) {
+  auto spac = std::make_unique<Packet>();
+  *spac << (uint8_t)NP_MSG_SLIPPI_PAD_SUGGESTION << player_idx_ << target_frame << seq;
+  spac->append(pad, PAD_INPUT_SIZE);
+  SendAsync(std::move(spac));
 }
 
 void NetplayClient::SetMatchSelections(PlayerSelections& s) {
@@ -642,6 +731,7 @@ void NetplayClient::SendSyncedGameState(const SyncedGameState& s) {
   SendAsync(std::move(spac));
 }
 bool NetplayClient::GetGamePrepResults(uint8_t step_idx, GamePrepStepResults& res) {
+  std::lock_guard<std::mutex> lk(game_prep_mutex_);
   while (!game_prep_step_queue_.empty()) {
     if (game_prep_step_queue_.front().step_idx == step_idx) { res = game_prep_step_queue_.front(); return true; }
     game_prep_step_queue_.pop_front();
@@ -656,21 +746,23 @@ void NetplayClient::SendChatMessage(int message_id) {
 }
 PlayerSelections NetplayClient::GetSlippiRemoteChatMessage(bool chat_enabled) {
   PlayerSelections copied;
-  if (remote_chat_message_selection_ && chat_enabled) {
-    copied.message_id = remote_chat_message_selection_->message_id;
-    copied.player_idx = remote_chat_message_selection_->player_idx;
-    remote_chat_message_selection_->message_id = 0;
-    remote_chat_message_selection_->player_idx = 0;
-  } else {
-    copied.message_id = 0; copied.player_idx = 0;
-    if (remote_chat_message_selection_ && !chat_enabled && remote_chat_message_selection_->message_id > 0 &&
-        remote_chat_message_selection_->message_id != CHAT_MSG_CHAT_DISABLED) {
-      auto spac = std::make_unique<Packet>();
-      *spac << (uint8_t)NP_MSG_SLIPPI_CHAT_MESSAGE << (int)CHAT_MSG_CHAT_DISABLED << player_idx_;
-      SendAsync(std::move(spac));
-      remote_sent_chat_message_id = 0;
-      remote_chat_message_selection_ = nullptr;
+  copied.message_id = 0; copied.player_idx = 0;
+  bool reply_chat_disabled = false;
+  {
+    std::lock_guard<std::mutex> lk(chat_mutex_);
+    if (chat_enabled) {
+      copied.message_id = remote_chat_message_.message_id;
+      copied.player_idx = remote_chat_message_.player_idx;
+    } else if (remote_chat_message_.message_id > 0 && remote_chat_message_.message_id != CHAT_MSG_CHAT_DISABLED) {
+      reply_chat_disabled = true;
     }
+    if (chat_enabled || reply_chat_disabled) { remote_chat_message_.message_id = 0; remote_chat_message_.player_idx = 0; }
+  }
+  if (reply_chat_disabled) {   // chat is off here: tell the sender so
+    auto spac = std::make_unique<Packet>();
+    *spac << (uint8_t)NP_MSG_SLIPPI_CHAT_MESSAGE << (int)CHAT_MSG_CHAT_DISABLED << player_idx_;
+    SendAsync(std::move(spac));
+    remote_sent_chat_message_id = 0;
   }
   return copied;
 }
@@ -684,6 +776,9 @@ uint8_t NetplayClient::GetSlippiRemoteSentChatMessage(bool chat_enabled) {
 std::unique_ptr<RemotePadOutput> NetplayClient::GetSlippiRemotePad(int index, int max_frame_count) {
   std::lock_guard<std::mutex> lk(pad_mutex_);
   auto out = std::make_unique<RemotePadOutput>();
+  out->player_idx = (uint8_t)(index >= player_idx_ ? index + 1 : index);
+  out->is_disconnected = !player_active_[out->player_idx].load(std::memory_order_acquire);
+  out->despawn_frame = despawn_frames_[out->player_idx].load(std::memory_order_acquire);
   if (remote_pad_queue_[index].empty()) {
     Pad empty(0);
     out->latest_frame = 0;
@@ -693,8 +788,6 @@ std::unique_ptr<RemotePadOutput> NetplayClient::GetSlippiRemotePad(int index, in
   out->latest_frame = 0;
   out->checksum_frame = remote_checksums_[index].frame;
   out->checksum = remote_checksums_[index].value;
-  out->player_idx = (uint8_t)(index >= player_idx_ ? index + 1 : index);
-  out->is_disconnected = !player_active_[out->player_idx].load(std::memory_order_acquire);
   int count = 0;
   for (auto it = remote_pad_queue_[index].rbegin(); it != remote_pad_queue_[index].rend(); ++it) {
     out->latest_frame = std::max(out->latest_frame, (*it)->frame);
@@ -728,6 +821,9 @@ void NetplayClient::ForceDisconnectPlayer(uint8_t player_idx) {
 void NetplayClient::ForceDisconnect(DisconnectReason reason) {
   pending_disconnect_reason_.store((uint32_t)reason, std::memory_order_release);
   disconnect_reason_.store((uint32_t)reason, std::memory_order_release);
+  // Before marking the players gone: we are the one leaving, so the network thread must not take it for those players
+  // dropping and report them to the others (see ProcessPlayerDrops).
+  status_.store(ConnectStatus::DISCONNECTED, std::memory_order_release);
   for (uint8_t i = 0; i < remote_player_count_; ++i) ForceDisconnectPlayer(match_info_.remote[i].player_idx);
 }
 bool NetplayClient::AreAllPeersDisconnectedForKey(const std::string& key) {
@@ -739,10 +835,82 @@ bool NetplayClient::AreAllConnectionsDisconnected() {
   for (auto& c : active_connections_) for (auto& p : c.second) if (!p.second.is_disconnected) return false;
   return true;
 }
-double NetplayClient::GetAndResetAvgPingMs() {
-  uint64_t sum = ping_sample_sum_us_.exchange(0, std::memory_order_relaxed);
-  uint64_t count = ping_sample_count_.exchange(0, std::memory_order_relaxed);
-  return count ? (double)sum / (double)count / 1000.0 : 0.0;
+void NetplayClient::AddRemotePad(uint8_t pidx, int32_t frame, const uint8_t* data) {
+  remote_pad_queue_[pidx].push_front(std::make_unique<Pad>(frame, data));
+  remote_pad_history_[pidx].emplace_front(frame, data);
+  if (remote_pad_history_[pidx].size() > DROP_REPORT_INPUT_COUNT) remote_pad_history_[pidx].pop_back();
+}
+
+// Network thread only. Finds the players we just lost and tells the other players which inputs we have for them. Those
+// reports add to the player's inputs, so once they have had time to arrive the newest input is the one everyone should
+// have. Returns whether we are still waiting on any reports. Port of Slippi 3.7.0's ProcessPlayerDrops.
+bool NetplayClient::ProcessPlayerDrops() {
+  bool waiting = false;
+  const uint64_t now = time_ms();
+  for (int i = 0; i < remote_player_count_; ++i) {
+    const uint8_t port = match_info_.remote[i].player_idx;
+    if (player_active_[port].load(std::memory_order_acquire)) continue;
+    // ForceDisconnect sets the status before marking the players: if we are the one leaving, nobody else is affected.
+    if (status_.load(std::memory_order_acquire) == ConnectStatus::DISCONNECTED) return false;
+    int32_t last_frame;
+    { std::lock_guard<std::mutex> lk(pad_mutex_); last_frame = remote_pad_history_[i].empty() ? 0 : remote_pad_history_[i].front().frame; }
+    if (player_drop_times_ms_[port] == 0) {
+      host::log("slippi: lost player %u, last input frame %d", port, last_frame);
+      player_drop_times_ms_[port] = now;
+      SendPlayerDropReport(port);
+    }
+    if (despawn_frames_[port].load(std::memory_order_acquire) != 0) continue;
+    if (now - player_drop_times_ms_[port] < (uint64_t)DROP_REPORT_WAIT_MS) { waiting = true; continue; }
+    host::log("slippi: settled on player %u: last input frame %d, despawn frame %d", port, last_frame, last_frame + DROP_DESPAWN_FRAMES);
+    despawn_frames_[port].store(last_frame + DROP_DESPAWN_FRAMES, std::memory_order_release);
+  }
+  return waiting;
+}
+
+// Network thread only.
+void NetplayClient::SendPlayerDropReport(uint8_t port) {
+  Packet spac;
+  spac << (uint8_t)NP_MSG_SLIPPI_PLAYER_DROP << player_idx_ << port;
+  {
+    std::lock_guard<std::mutex> lk(pad_mutex_);
+    const auto& history = remote_pad_history_[PlayerIdxFromPort(port)];
+    spac << (history.empty() ? (int32_t)0 : history.front().frame) << (uint8_t)history.size();
+    for (const auto& pad : history) spac.append(pad.buf, PAD_WIRE_SIZE);
+  }
+  Send(spac);
+}
+
+// Network thread only. Adds any inputs we were missing from a report about a dropped player, most recent first. They are
+// the real inputs, so they work as if the player had sent them to us; the game rolls back if they differ.
+void NetplayClient::AddPlayerDropReportInputs(uint8_t pidx, int32_t last_frame, uint8_t input_count, const uint8_t* inputs) {
+  std::lock_guard<std::mutex> lk(pad_mutex_);
+  const int32_t head_frame = remote_pad_queue_[pidx].empty() ? 0 : remote_pad_queue_[pidx].front()->frame;
+  const int64_t missing = (int64_t)last_frame - (int64_t)head_frame;
+  if (missing > 128) { host::log("slippi: player drop packet contained too many frames (%lld)", (long long)missing); return; }
+  for (int64_t i = missing - 1; i >= 0; --i) {
+    uint8_t pad[PAD_WIRE_SIZE] = {};
+    if (i < input_count) {
+      std::memcpy(pad, &inputs[i * PAD_WIRE_SIZE], PAD_WIRE_SIZE);
+    } else {
+      // DROP_REPORT_INPUT_COUNT should prevent this. The queue cannot have gaps, so repeat an input; the desync detection
+      // catches it if it differs from the real one.
+      host::log("slippi: player drop packet is missing frame %lld", (long long)((int64_t)last_frame - i));
+      if (!remote_pad_queue_[pidx].empty()) std::memcpy(pad, remote_pad_queue_[pidx].front()->buf, PAD_WIRE_SIZE);
+    }
+    AddRemotePad(pidx, (int32_t)((int64_t)last_frame - i), pad);
+  }
+}
+
+// Once we settle on a dropped player's last input it repeats. These go in the same queue as real inputs since they are
+// just as final, so the game does not need to know the player is gone.
+void NetplayClient::FillDroppedPlayerInputs(int32_t frame) {
+  std::lock_guard<std::mutex> lk(pad_mutex_);
+  for (int i = 0; i < remote_player_count_; ++i) {
+    if (despawn_frames_[match_info_.remote[i].player_idx].load(std::memory_order_acquire) == 0) continue;
+    auto& queue = remote_pad_queue_[i];
+    if (queue.empty()) queue.push_front(std::make_unique<Pad>(0));
+    while (queue.front()->frame < frame) queue.push_front(std::make_unique<Pad>(queue.front()->frame + 1, queue.front()->buf));
+  }
 }
 int32_t NetplayClient::CalcTimeOffsetUs() {
   std::vector<int> offsets;
@@ -778,7 +946,9 @@ DesyncRecoveryResp NetplayClient::GetDesyncRecoveryState() {
     if (std::abs((int)r.state.seconds_remaining - (int)s.seconds_remaining) > 1) { r.is_error = true; return r; }
     if (s.seconds_remaining > r.state.seconds_remaining) r.state.seconds_remaining = s.seconds_remaining;
     for (int j = 0; j < 4; ++j) {
-      auto& f = r.state.fighters[i]; auto& g = s.fighters[i];   // (index i, as in Dolphin)
+      // f starts as our own synced state for fighter j and ends up as the reconciled one; g is what remote player i
+      // reported for it (3.7.0 fixed the old fighters[i] indexing).
+      auto& f = r.state.fighters[j]; auto& g = s.fighters[j];
       if (f.stocks_remaining != g.stocks_remaining) { r.is_error = true; return r; }
       if (std::abs((int)f.current_health - (int)g.current_health) > 25) { r.is_error = true; return r; }
       if (g.current_health < f.current_health) f.current_health = g.current_health;

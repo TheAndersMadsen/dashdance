@@ -34,6 +34,8 @@ bool handle(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, std::vect
 }  // namespace slippi::online
 #else
 #include "slippi_net.h"
+#include "slippi_input_suggestions.h"
+#include "slippi_match_quality.h"
 #include "slippi_report.h"
 #include "exi_slippi.h"
 #include "discord_rpc.h"
@@ -72,6 +74,7 @@ enum Cmd : uint8_t {
 inline uint32_t be32(const uint8_t* p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
 inline uint16_t be16(const uint8_t* p) { return (uint16_t)((p[0] << 8) | p[1]); }
 inline void append_u32(std::vector<uint8_t>& q, uint32_t v) { for (int i = 3; i >= 0; --i) q.push_back((uint8_t)(v >> (8 * i))); }
+inline void append_u16(std::vector<uint8_t>& q, uint16_t v) { q.push_back((uint8_t)(v >> 8)); q.push_back((uint8_t)v); }
 
 // ---------------------------------------------------------------- savestates
 // Exactly Dolphin's SlippiSavestate: full RAM regions minus the sound/VI exclusions, with the
@@ -171,8 +174,9 @@ uint32_t g_stall_frame_counts[REMOTE_PLAYER_MAX] = {};
 // means the guest has to reuse old pads for the current frames - the usual
 // first-domino of an online desync, so it gets named in the log.
 int32_t g_input_gap_start[REMOTE_PLAYER_MAX] = {};
-uint64_t g_last_interval_time_us = 0;
-int32_t g_perf_debt = 0;
+// Random bits the guest sends with each pad and mixes into the RNG seed (Slippi 3.7.0). Not from g_rng: the opponent
+// sees them and could work out its state.
+std::random_device g_pad_rng_bits;
 int g_frames_to_skip = 0, g_frames_to_advance = 0, g_fall_behind = 0, g_fall_far_behind = 0;
 bool g_currently_skipping = false, g_currently_advancing = false;
 std::mt19937 g_rng((uint32_t)time_ms());
@@ -216,34 +220,69 @@ void cleanup_connection() {
 }
 
 // ---------------------------------------------------------------- per-frame online flow
-void handle_poor_match_performance(int32_t frame) {
-  if (g_last_search.mode != Matchmaking::RANKED || !g_netplay) return;
-  const uint64_t interval_frames = 150, frame_time_us = 16683;
-  if ((frame + (interval_frames - 50)) % interval_frames != 0) return;
-  double modifier = frame > 3600 ? 1.15 : 1.0;
-  uint64_t cur = time_us();
-  if (g_last_interval_time_us == 0) { g_last_interval_time_us = cur; g_netplay->GetAndResetAvgPingMs(); return; }
-  double ratio = (double)(cur - g_last_interval_time_us) / (double)(frame_time_us * interval_frames);
-  g_last_interval_time_us = cur;
-  int32_t speed_debt = ratio >= 1.0 + 0.75 * modifier ? 15 : ratio >= 1.0 + 0.5 * modifier ? 8 : ratio >= 1.0 + 0.1 * modifier ? 4 : -1;
-  double ping = g_netplay->GetAndResetAvgPingMs();
-  int32_t ping_debt = ping >= 200 * modifier ? 15 : ping >= 120 * modifier ? 8 : ping >= 90 * modifier ? 4 : -1;
-  g_perf_debt = std::max(0, g_perf_debt + std::max(speed_debt, ping_debt));
-  if (g_perf_debt >= 30) {
-    host::log("slippi: match terminated due to poor performance (%d)", g_perf_debt);
-    { UserInfo me = g_user->GetUserInfo(); if (reporting_enabled()) report::match_status(me.uid, me.play_key, g_recent_mm_result.id, "poor_performance", true); }
-    g_netplay->ForceDisconnect(NetplayClient::DisconnectReason::POOR_PERFORMANCE);
-  }
+// Why a frame is held back instead of sent.
+enum class FrameSkip { NONE, STALL /* opponent inputs past the rollback limit */, TIME_SYNC /* running ahead */ };
+
+// Reports every pass through the online frame handler to the match quality tracker, which judges the match from
+// stalls, rollback depth and frame timing and decides when it is too degraded to continue (Slippi 3.7.0).
+void handle_match_quality(int32_t frame, bool is_stall) {
+  auto pad = g_netplay->GetSlippiRemotePad(0, ROLLBACK_MAX_FRAMES);   // ranked is 1v1: the sole opponent's inputs matter
+  match_quality::Frame info;
+  info.frame = frame;
+  info.time_us = time_us();
+  info.is_stall = is_stall;
+  info.latest_remote_frame = pad->latest_frame;
+  info.ping_us = g_netplay->GetPingUs(0);
+  if (!match_quality::on_frame(info)) return;
+  // Tell the server, then drop all remote players with the POOR_PERFORMANCE reason: the next frame sees the
+  // disconnect and ends the game as for a real one, and the reason rides the disconnect to the opponent.
+  host::log("slippi: match terminated due to poor performance on frame %d", frame);
+  { UserInfo me = g_user->GetUserInfo(); if (reporting_enabled()) report::match_status(me.uid, me.play_key, g_recent_mm_result.id, "poor_performance", true); }
+  g_netplay->ForceDisconnect(NetplayClient::DisconnectReason::POOR_PERFORMANCE);
 }
 
-bool should_skip_online_frame(int32_t frame, int32_t finalized_frame) {
+// Input suggestions smooth the connection between two humans; a bot is expected to make it feel good on its own, so
+// they are off whenever a bot account is in the game.
+void start_input_suggestions(uint8_t delay, uint8_t input_source_port) {
+  bool bot_in_game = false;
+  for (const auto& player : g_matchmaking->GetPlayerInfo()) bot_in_game |= player.is_bot;
+  input_suggestions::GameConfig game;
+  game.enabled = g_config.input_suggestions && !bot_in_game;
+  game.local_player_idx = (uint8_t)g_matchmaking->LocalPlayerIndex();
+  game.remote_player_count = g_matchmaking->RemotePlayerCount();
+  game.delay = delay;
+  game.source_port = input_source_port;
+  game.source_is_adapter = input_source_port < 4 && input_suggestions::adapter_has_port(input_source_port);
+  input_suggestions::start_game(game);
+}
+
+// Tells input suggestions how many times the game has polled the controller, what it sent for this frame and whether it
+// is advancing a frame, so it can work out which frame the next adapter reports belong to.
+void report_input_suggestions_frame(int32_t frame, bool is_skip, bool is_advancing, uint8_t input_source_port, const uint8_t* inputs) {
+  input_suggestions::LocalFrame info;
+  info.frame = frame;
+  info.is_skip = is_skip;
+  info.is_advancing = is_advancing;
+  if (input_source_port < 4) {
+    info.has_poll = true;
+    info.poll_count = input_suggestions::adapter_game_poll_count(input_source_port);
+    info.has_origin = input_suggestions::adapter_origin(input_source_port, info.origin, &info.analog_mode);
+  }
+  std::memcpy(info.sent_pad, inputs, PAD_INPUT_SIZE);
+  input_suggestions::Suggestion suggestion = input_suggestions::on_local_frame(info);
+  if (suggestion.is_valid && g_netplay) g_netplay->SendSlippiPadSuggestion(suggestion.target_frame, suggestion.seq, suggestion.pad);
+}
+
+FrameSkip should_skip_online_frame(int32_t frame, int32_t finalized_frame) {
   auto st = g_netplay->GetSlippiConnectStatus();
-  if (st == NetplayClient::ConnectStatus::FAILED || st == NetplayClient::ConnectStatus::DISCONNECTED) return false;
+  if (st == NetplayClient::ConnectStatus::FAILED || st == NetplayClient::ConnectStatus::DISCONNECTED) return FrameSkip::NONE;
   bool any_needs_inputs = false;
   uint8_t remote_count = g_matchmaking->RemotePlayerCount();
   for (uint8_t i = 0; i < remote_count; ++i) {
     auto pad = g_netplay->GetSlippiRemotePad(i, ROLLBACK_MAX_FRAMES);
-    if (pad->is_disconnected) { g_stall_frame_counts[i] = 0; continue; }
+    // A dropped player has all the inputs they need once we settle on their last one. Until then they might still
+    // change, so their inputs count as late like anyone else's.
+    if (pad->is_disconnected && pad->despawn_frame != 0) { g_stall_frame_counts[i] = 0; continue; }
     int32_t latest = pad->latest_frame;
     bool enough = latest - finalized_frame >= (frame - finalized_frame - ROLLBACK_MAX_FRAMES);
     if (enough) { g_stall_frame_counts[i] = 0; continue; }
@@ -256,7 +295,7 @@ bool should_skip_online_frame(int32_t frame, int32_t finalized_frame) {
       continue;
     }
   }
-  if (any_needs_inputs) return true;
+  if (any_needs_inputs) return FrameSkip::STALL;
   const int32_t frame_time = 16683, t1 = 10000, t2 = 2 * frame_time + t1;
   if (frame % ONLINE_LOCKSTEP_INTERVAL == 0 && !g_currently_skipping && frame <= 120) {
     int32_t offset = g_netplay->CalcTimeOffsetUs();
@@ -267,9 +306,9 @@ bool should_skip_online_frame(int32_t frame, int32_t finalized_frame) {
       host::log("slippi: halting on frame %d for time sync (offset %d us, %d frames)", frame, offset, g_frames_to_skip);
     }
   }
-  if (g_frames_to_skip > 0) { --g_frames_to_skip; return true; }
+  if (g_frames_to_skip > 0) { --g_frames_to_skip; return FrameSkip::TIME_SYNC; }
   g_currently_skipping = false;
-  return false;
+  return FrameSkip::NONE;
 }
 
 bool opponent_runahead() {
@@ -309,7 +348,8 @@ bool should_advance_online_frame(int32_t frame) {
   return false;
 }
 
-void prepare_opponent_inputs(int32_t frame, bool should_skip, std::vector<uint8_t>& q) {
+// Returns whether the game is advancing a frame for time sync.
+bool prepare_opponent_inputs(int32_t frame, bool should_skip, std::vector<uint8_t>& q) {
   q.clear();
   uint8_t frame_result = 1;
   auto st = g_netplay->GetSlippiConnectStatus();
@@ -319,6 +359,7 @@ void prepare_opponent_inputs(int32_t frame, bool should_skip, std::vector<uint8_
   q.push_back(frame_result);
   uint8_t remote_count = g_matchmaking->RemotePlayerCount();
   q.push_back(remote_count);
+  g_netplay->FillDroppedPlayerInputs(frame);
   std::unique_ptr<RemotePadOutput> results[REMOTE_PLAYER_MAX];
   int32_t latest_from_opps = -123 - 1;
   uint32_t last_checksum_frame = 0, last_checksum = 0;
@@ -362,17 +403,10 @@ void prepare_opponent_inputs(int32_t frame, bool should_skip, std::vector<uint8_
       latest_from_opps = results[i]->latest_frame;
     }
   }
-  constexpr int32_t DESPAWN_INTERVAL = 30;
-  uint8_t should_despawn[REMOTE_PLAYER_MAX] = {0, 0, 0};
-  for (int i = 0; i < remote_count; ++i) {
-    if (!results[i]->is_disconnected) continue;
-    int32_t threshold = results[i]->latest_frame + 2 * ROLLBACK_MAX_FRAMES + 2;
-    int32_t despawn = ((threshold + DESPAWN_INTERVAL - 1) / DESPAWN_INTERVAL) * DESPAWN_INTERVAL;
-    if (frame >= despawn) should_despawn[i] = 1;
-  }
   for (int i = 0; i < remote_count; ++i) {
     if (!results[i]->is_disconnected) { append_u32(q, (uint32_t)results[i]->checksum_frame); append_u32(q, results[i]->checksum); continue; }
-    results[i]->latest_frame = latest_from_opps;
+    // A disconnected player's checksums stop updating: give the guest someone else's so it has an up to date one to
+    // compare. Their frames need no such trick, FillDroppedPlayerInputs keeps those current (Slippi 3.7.0).
     append_u32(q, last_checksum_frame); append_u32(q, last_checksum);
   }
   for (int i = remote_count; i < REMOTE_PLAYER_MAX; ++i) { append_u32(q, 0); append_u32(q, 0); }
@@ -386,13 +420,29 @@ void prepare_opponent_inputs(int32_t frame, bool should_skip, std::vector<uint8_
   }
   for (int i = remote_count; i < REMOTE_PLAYER_MAX; ++i) { latest_read[i] = frame; append_u32(q, (uint32_t)frame); }
   append_u32(q, (uint32_t)*std::min_element(std::begin(latest_read), std::end(latest_read)));
+  uint8_t latest_inputs[REMOTE_PLAYER_MAX][PAD_FULL_SIZE] = {};
   for (int i = 0; i < REMOTE_PLAYER_MAX; ++i) {
     std::vector<uint8_t> tx;
     if (i < remote_count && offset[i] < (int)results[i]->data.size()) tx.assign(results[i]->data.begin() + offset[i], results[i]->data.end());
     tx.resize(PAD_FULL_SIZE * ROLLBACK_MAX_FRAMES, 0);
+    std::memcpy(latest_inputs[i], tx.data(), PAD_FULL_SIZE);   // what the guest loads when it has no input for the frame
     q.insert(q.end(), tx.begin(), tx.end());
   }
-  for (int i = 0; i < REMOTE_PLAYER_MAX; ++i) q.push_back(should_despawn[i]);
+  // The frame each remote player's fighter despawns on, or 0. The guest compares it to the frame it is processing,
+  // which lands it on the same frame for everyone even during a rollback.
+  for (int i = 0; i < REMOTE_PLAYER_MAX; ++i) append_u32(q, i < remote_count ? (uint32_t)results[i]->despawn_frame : 0);
+  // The inputs to use for each frame after each player's latest one, should the guest need to predict them: the latest
+  // input unless a newer input suggestion applies. The guest checks every prediction against the real input once it
+  // arrives and rolls back if they differ.
+  for (int i = 0; i < REMOTE_PLAYER_MAX; ++i) {
+    uint8_t predictions[PAD_FULL_SIZE * ROLLBACK_MAX_FRAMES];
+    for (int j = 0; j < ROLLBACK_MAX_FRAMES; ++j) std::memcpy(&predictions[j * PAD_FULL_SIZE], latest_inputs[i], PAD_FULL_SIZE);
+    if (i < remote_count)
+      input_suggestions::fill_predictions((uint8_t)i, latest_read[i], results[i]->is_disconnected, latest_inputs[i], predictions, sizeof(predictions));
+    q.insert(q.end(), std::begin(predictions), std::end(predictions));
+  }
+  q.push_back((uint8_t)(g_pad_rng_bits() & 0xFF));   // random bits for the guest to send with the next pad
+  return frame_result == 4;
 }
 
 void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
@@ -401,12 +451,17 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
   uint32_t finalized_checksum = be32(payload + 8);
   uint8_t delay = payload[12];
   const uint8_t* inputs = payload + 13;
+  const uint8_t input_source_port = payload[25];
+  const bool is_leaving = payload[26] != 0;
   if (frame == 1) {
     g_available_savestates.clear();
     g_active_savestates.clear();
     for (int i = 0; i < ROLLBACK_MAX_FRAMES; ++i) g_available_savestates.push_back(std::make_unique<Savestate>());
     for (auto& c : g_stall_frame_counts) c = 0;
-    g_last_interval_time_us = 0; g_perf_debt = 0;
+    match_quality::GameConfig quality;   // only ranked matches are terminated for poor quality
+    quality.can_terminate = g_last_search.mode == Matchmaking::RANKED;
+    quality.delay = delay;
+    match_quality::start_game(quality);
     g_frames_to_skip = 0; g_currently_skipping = false;
     g_frames_to_advance = 0; g_currently_advancing = false; g_fall_behind = 0; g_fall_far_behind = 0;
     g_local_selections.Reset();
@@ -416,7 +471,11 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
     host::input_mark_match_start();
     g_local_checksums.clear(); g_checksums_compared = 0; g_checksums_mismatched = 0; g_last_checksum_frame = 0;
     for (auto& gap : g_input_gap_start) gap = 0;
+    start_input_suggestions(delay, input_source_port);
   }
+  // The local player chose to leave (Slippi 3.7.0: LRAS in party mode): that ends the game for us like losing the
+  // connection, and the other players treat it as a disconnect too.
+  if (is_leaving && !is_disconnected()) g_netplay->ForceDisconnect();
   if (is_disconnected()) {
     if (g_netplay && g_netplay->GetDisconnectReason() == NetplayClient::DisconnectReason::POOR_PERFORMANCE)
       host::log("slippi: the match has been terminated due to poor network quality");
@@ -427,14 +486,17 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
   if (frame % 30 == 0) host::log("slippi: online frame %d wall %.3f s retrace %u rollbacks %llu", frame, host::now_seconds(), host::retrace_count(), (unsigned long long)g_rollbacks);
   if (finalized > 0 && finalized_checksum) { g_local_checksums[finalized] = finalized_checksum; while (g_local_checksums.size() > 600) g_local_checksums.erase(g_local_checksums.begin()); }
   g_netplay->DropOldRemoteInputs(finalized);
-  bool skip = should_skip_online_frame(frame, finalized);
+  const FrameSkip skip_reason = should_skip_online_frame(frame, finalized);
+  const bool skip = skip_reason != FrameSkip::NONE;
+  // Halted frames count too: stalls are one of the signals.
+  handle_match_quality(frame, skip_reason == FrameSkip::STALL);
   if (skip) g_netplay->SendSlippiPad(nullptr);
   else {
-    handle_poor_match_performance(frame);
     if (frame == 1) for (int i = 1; i <= delay; ++i) g_netplay->SendSlippiPad(std::make_unique<Pad>(i));
     g_netplay->SendSlippiPad(std::make_unique<Pad>(frame + delay, finalized, finalized_checksum, inputs));
   }
-  prepare_opponent_inputs(frame, skip, q);
+  const bool advancing = prepare_opponent_inputs(frame, skip, q);
+  report_input_suggestions_frame(frame, skip, advancing, input_source_port, inputs);
 }
 
 void handle_capture_savestate(const uint8_t* payload) {
@@ -718,20 +780,22 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
     block[2] = pause_allowed ? (block[2] & 0xF7) : (block[2] | 0x8);
     bool stage_selection_mode = g_last_search.mode == Matchmaking::DIRECT || g_last_search.mode == Matchmaking::TEAMS;
     if (!stage_selection_mode) alt_stage_mode = 0;
-    uint32_t secs = desync.state.seconds_remaining;
-    block[0x10] = (uint8_t)(secs >> 24); block[0x11] = (uint8_t)(secs >> 16); block[0x12] = (uint8_t)(secs >> 8); block[0x13] = (uint8_t)secs;
+    // Desync recovery: the defaults are 4 stocks and 0 percent, so outside a recovery the fighters reset. The timer is
+    // restored below, after the mode's default timer is set.
     for (int i = 0; i < 4; ++i) {
       block[0x62 + i * 0x24] = desync.state.fighters[i].stocks_remaining;
       uint16_t hp = desync.state.fighters[i].current_health;
       block[0x70 + i * 0x24] = (uint8_t)(hp >> 8); block[0x71 + i * 0x24] = (uint8_t)hp;
     }
   }
-  if (g_last_search.mode == Matchmaking::PARTY) {
-    block[0x0] = 0x12; block[0x3] = 0xCC;
-    uint32_t t = 5 * 60; block[0x10] = (uint8_t)(t >> 24); block[0x11] = (uint8_t)(t >> 16); block[0x12] = (uint8_t)(t >> 8); block[0x13] = (uint8_t)t;
-  } else {
-    block[0x0] = 0x32; block[0x3] = 0x4C;
-    uint32_t t = 8 * 60; block[0x10] = (uint8_t)(t >> 24); block[0x11] = (uint8_t)(t >> 16); block[0x12] = (uint8_t)(t >> 8); block[0x13] = (uint8_t)t;
+  // Every mode, party included since Slippi 3.7.0: stock mode, 4 character players in the UI, 8 minute countdown.
+  block[0x0] = 0x32; block[0x3] = 0x4C;
+  {
+    uint32_t t = 8 * 60;
+    // Restore the timer when recovering from a desync. This must follow the default timer, which would otherwise reset
+    // the clock on every desync (fixed in 3.7.0).
+    if (desync.is_recovering && local_ready && remote_ready) t = desync.state.seconds_remaining;
+    block[0x10] = (uint8_t)(t >> 24); block[0x11] = (uint8_t)(t >> 16); block[0x12] = (uint8_t)(t >> 8); block[0x13] = (uint8_t)t;
   }
   block[0xB] = 0xFF;
   uint64_t items = 0xF80000000F000000ull;
@@ -779,6 +843,20 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
   match_id.resize(51);
   q.insert(q.end(), match_id.begin(), match_id.end());
   q.push_back((uint8_t)alt_stage_mode);
+  // The values behind each player's rank plus their ranked mmr, and whether each is a bot account, so the game can
+  // record them in the replay (Slippi 3.7.0).
+  for (int i = 0; i < 4; ++i) {
+    UserInfo info = i < (int)players.size() ? players[i] : UserInfo();
+    uint32_t rating_bits, mmr_bits;
+    std::memcpy(&rating_bits, &info.ranked_rating, 4);
+    std::memcpy(&mmr_bits, &info.ranked_mmr, 4);
+    append_u32(q, rating_bits);
+    append_u32(q, (uint32_t)info.ranked_update_count);
+    append_u16(q, (uint16_t)info.ranked_global_placement);
+    append_u16(q, (uint16_t)info.ranked_regional_placement);
+    append_u32(q, mmr_bits);
+  }
+  for (int i = 0; i < 4; ++i) q.push_back((uint8_t)(i < (int)players.size() && players[i].is_bot));
 }
 
 void prepare_online_status(std::vector<uint8_t>& q) {
@@ -880,6 +958,8 @@ void init() {
 }
 
 void shutdown() {
+  input_suggestions::end_game();
+  match_quality::end_game();
   if (!g_initialized) return;
   g_initialized = false;
   if (g_offline) return;

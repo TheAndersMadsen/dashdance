@@ -12,6 +12,8 @@
 #include "sha256.h"
 #include "window.h"
 #include "vcdiff.h"
+#include "slippi_input_suggestions.h"
+#include "slippi_match_quality.h"
 #include <cstdio>
 #include <atomic>
 #include <cstring>
@@ -45,7 +47,7 @@ enum Cmd : uint8_t {
 // Fixed payload sizes (bytes after the command byte), from CEXISlippi::payloadSizes.
 std::unordered_map<uint8_t, uint32_t> g_payload_sizes = {
     {CMD_RECEIVE_COMMANDS, 1}, {CMD_PREPARE_REPLAY, 0xFFFF}, {CMD_READ_FRAME, 4}, {CMD_IS_STOCK_STEAL, 5}, {CMD_GET_LOCATION, 6},
-    {CMD_IS_FILE_READY, 0}, {CMD_GET_GECKO_CODES, 0}, {CMD_ONLINE_INPUTS, 25}, {CMD_CAPTURE_SAVESTATE, 32}, {CMD_LOAD_SAVESTATE, 32},
+    {CMD_IS_FILE_READY, 0}, {CMD_GET_GECKO_CODES, 0}, {CMD_ONLINE_INPUTS, 27}, {CMD_CAPTURE_SAVESTATE, 32}, {CMD_LOAD_SAVESTATE, 32},
     {CMD_GET_MATCH_STATE, 0}, {CMD_FIND_OPPONENT, 19}, {CMD_SET_MATCH_SELECTIONS, 9}, {CMD_SEND_CHAT_MESSAGE, 2}, {CMD_OPEN_LOGIN, 0},
     {CMD_LOGOUT, 0}, {CMD_UPDATE, 0}, {CMD_GET_ONLINE_STATUS, 0}, {CMD_CLEANUP_CONNECTION, 0}, {CMD_GET_NEW_SEED, 0},
     {CMD_REPORT_GAME, 368}, {CMD_FETCH_CODE_SUGGESTION, 31}, {CMD_OVERWRITE_SELECTIONS, 2 + 12},
@@ -451,7 +453,8 @@ void dma_write(uint32_t addr, uint32_t size) {
       case CMD_STOP_MUSIC: jukebox::stop(); break;
       case CMD_CHANGE_MUSIC_VOLUME: jukebox::set_melee_volume(mem[loc + 1]); break;
       case CMD_RECEIVE_COMMANDS: break;   // handled above
-      case CMD_RECEIVE_GAME_END: write_to_file(&mem[loc], payload + 1, "close"); slippi::playback::note_game_end(); break;
+      case CMD_RECEIVE_GAME_END: write_to_file(&mem[loc], payload + 1, "close"); slippi::playback::note_game_end();
+        slippi::input_suggestions::end_game(); slippi::match_quality::end_game(); break;
       case CMD_FRAME_BOOKEND: write_to_file(&mem[loc], payload + 1, ""); break;
       case CMD_PREPARE_REPLAY: case CMD_READ_FRAME: case CMD_IS_STOCK_STEAL:
       case CMD_IS_FILE_READY: case CMD_GET_GECKO_CODES: {

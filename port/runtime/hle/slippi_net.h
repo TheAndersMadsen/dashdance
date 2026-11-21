@@ -24,14 +24,23 @@ constexpr int ROLLBACK_MAX_FRAMES = 7;
 constexpr int ONLINE_LOCKSTEP_INTERVAL = 30;
 constexpr int REMOTE_PLAYER_MAX = 3;
 constexpr int PLAYER_COUNT_MAX = REMOTE_PLAYER_MAX + 1;
-constexpr int PAD_FULL_SIZE = 0xC;
-constexpr int PAD_DATA_SIZE = 0x8;
+constexpr int PAD_FULL_SIZE = 0xC;            // the full pad report in the game's format
+constexpr int PAD_INPUT_SIZE = 0x8;           // buttons, sticks and triggers; input suggestions only carry this part
+constexpr int PAD_WIRE_SIZE = PAD_INPUT_SIZE + 1;  // the inputs plus the RNG bits: what goes over the network per frame
+// How many of a dropped player's latest inputs to send the other players. One client's inputs can only get so far ahead
+// of another's before the rollback limit halts the game: at most 2 * 7 + 2 * 15 = 44 frames (Slippi 3.7.0).
+constexpr int DROP_REPORT_INPUT_COUNT = 64;
+// How long to wait for the other players' reports about a dropped player before settling on their last input.
+constexpr int DROP_REPORT_WAIT_MS = 300;
+// How many frames after a dropped player's last input their fighter despawns.
+constexpr int DROP_DESPAWN_FRAMES = 2 * 7 + 2;
 constexpr uint8_t CHAT_MSG_CHAT_DISABLED = 0x10;
 extern const char* const SLIPPI_SEMVER;   // netplay version this port speaks
 
 enum NetMsg : uint8_t {
   NP_MSG_SLIPPI_PAD = 0x80, NP_MSG_SLIPPI_PAD_ACK = 0x81, NP_MSG_SLIPPI_MATCH_SELECTIONS = 0x82, NP_MSG_SLIPPI_CONN_SELECTED = 0x83,
   NP_MSG_SLIPPI_CHAT_MESSAGE = 0x84, NP_MSG_SLIPPI_COMPLETE_STEP = 0x85, NP_MSG_SLIPPI_SYNCED_STATE = 0x86,
+  NP_MSG_SLIPPI_PAD_SUGGESTION = 0x87, NP_MSG_SLIPPI_PLAYER_DROP = 0x88,
 };
 
 // sf::Packet wire format: integers big-endian, bool as one byte, strings as u32 length + bytes.
@@ -68,7 +77,7 @@ struct Pad {
   uint32_t checksum = 0;
   uint8_t buf[PAD_FULL_SIZE] = {};
   explicit Pad(int32_t f) : frame(f) {}
-  Pad(int32_t f, const uint8_t* data) : frame(f) { for (int i = 0; i < PAD_DATA_SIZE; ++i) buf[i] = data[i]; }
+  Pad(int32_t f, const uint8_t* data) : frame(f) { for (int i = 0; i < PAD_WIRE_SIZE; ++i) buf[i] = data[i]; }
   Pad(int32_t f, int32_t cf, uint32_t c, const uint8_t* data) : Pad(f, data) { checksum_frame = cf; checksum = c; }
 };
 
@@ -77,6 +86,7 @@ struct RemotePadOutput {
   uint32_t checksum = 0;
   uint8_t player_idx = 0;
   bool is_disconnected = false;
+  int32_t despawn_frame = 0;   // the frame a dropped player's fighter despawns on, 0 until we settle on their last input
   std::vector<uint8_t> data;
 };
 
@@ -110,6 +120,7 @@ struct UserInfo {
   std::vector<std::string> chat_messages;
   bool is_bot = false;
   float ranked_rating = 0; int ranked_update_count = 0, ranked_global_placement = 0, ranked_regional_placement = 0;
+  float ranked_mmr = 0;
 };
 
 // The user record written by the Slippi Launcher (user.json in the Slippi user folder).
@@ -159,6 +170,8 @@ class NetplayClient {
   std::vector<int> GetFailedConnections() const { return failed_connections_; }
   void StartSlippiGame();
   void SendSlippiPad(std::unique_ptr<Pad> pad);
+  void SendSlippiPadSuggestion(int32_t target_frame, uint32_t seq, const uint8_t* pad);
+  void FillDroppedPlayerInputs(int32_t frame);
   void SetMatchSelections(PlayerSelections& s);
   void SendGamePrepStep(const GamePrepStepResults& s);
   void SendSyncedGameState(const SyncedGameState& s);
@@ -173,7 +186,7 @@ class NetplayClient {
   PlayerSelections GetSlippiRemoteChatMessage(bool chat_enabled);
   uint8_t GetSlippiRemoteSentChatMessage(bool chat_enabled);
   int32_t CalcTimeOffsetUs();
-  double GetAndResetAvgPingMs();
+  uint64_t GetPingUs(int index) const { return ping_us_[index].load(std::memory_order_relaxed); }
   bool IsWaitingForDesyncRecovery();
   DesyncRecoveryResp GetDesyncRecoveryState();
   void SendChatMessage(int message_id);
@@ -195,6 +208,10 @@ class NetplayClient {
   void WriteSelections(Packet& p, const PlayerSelections& s);
   std::unique_ptr<PlayerSelections> ReadSelections(Packet& p);
   std::unique_ptr<PlayerSelections> ReadChatMessage(Packet& p);
+  void AddRemotePad(uint8_t pidx, int32_t frame, const uint8_t* data);   // pad_mutex_ held
+  bool ProcessPlayerDrops();
+  void SendPlayerDropReport(uint8_t port);
+  void AddPlayerDropReportInputs(uint8_t pidx, int32_t last_frame, uint8_t input_count, const uint8_t* inputs);
 
   std::mutex pad_mutex_, ack_mutex_, async_mutex_;
   std::deque<std::unique_ptr<Packet>> async_queue_;
@@ -209,12 +226,19 @@ class NetplayClient {
   std::atomic<bool> player_active_[PLAYER_COUNT_MAX] = {};
   std::deque<std::unique_ptr<Pad>> local_pad_queue_;
   std::deque<std::unique_ptr<Pad>> remote_pad_queue_[REMOTE_PLAYER_MAX];
+  // The latest inputs from each remote player, most recent first: what another client might still be missing if the
+  // player drops (remote_pad_queue_ only holds what the game might still need).
+  std::deque<Pad> remote_pad_history_[REMOTE_PLAYER_MAX];
   bool is_desync_recovery_ = false;
   struct ChecksumEntry { int32_t frame = 0; uint32_t value = 0; } remote_checksums_[REMOTE_PLAYER_MAX];
   SyncedGameState remote_sync_states_[REMOTE_PLAYER_MAX], local_sync_state_;
-  std::deque<GamePrepStepResults> game_prep_step_queue_;
-  uint64_t ping_us_[REMOTE_PLAYER_MAX] = {};
-  std::atomic<uint64_t> ping_sample_sum_us_{0}, ping_sample_count_{0};
+  std::mutex game_prep_mutex_, chat_mutex_;
+  std::deque<GamePrepStepResults> game_prep_step_queue_;   // game_prep_mutex_
+  std::atomic<uint64_t> ping_us_[REMOTE_PLAYER_MAX] = {};
+  // Player drops, by port: despawn frames published for the EXI thread (0 until settled) and, network thread only, when
+  // we lost the player.
+  std::atomic<int32_t> despawn_frames_[PLAYER_COUNT_MAX] = {};
+  uint64_t player_drop_times_ms_[PLAYER_COUNT_MAX] = {};
   int32_t last_frame_acked_[REMOTE_PLAYER_MAX] = {};
   FrameOffsetData frame_offset_data_[REMOTE_PLAYER_MAX];
   FrameTiming last_frame_timing_[REMOTE_PLAYER_MAX];
@@ -223,7 +247,7 @@ class NetplayClient {
   std::atomic<uint32_t> pending_disconnect_reason_{0}, disconnect_reason_{0};
   std::vector<int> failed_connections_;
   MatchInfo match_info_;
-  std::unique_ptr<PlayerSelections> remote_chat_message_selection_;
+  PlayerSelections remote_chat_message_;   // chat_mutex_; message_id 0 when there is none
 };
 
 class Matchmaking {
