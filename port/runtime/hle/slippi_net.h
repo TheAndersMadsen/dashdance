@@ -110,6 +110,7 @@ struct UserInfo {
   std::vector<std::string> chat_messages;
   bool is_bot = false;
   float ranked_rating = 0; int ranked_update_count = 0, ranked_global_placement = 0, ranked_regional_placement = 0;
+  float ranked_mmr = 0;
 };
 
 // The user record written by the Slippi Launcher (user.json in the Slippi user folder).
