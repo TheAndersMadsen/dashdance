@@ -26,7 +26,7 @@ constexpr int kEscapeScancode = 41;   // SDL_SCANCODE_ESCAPE
 constexpr int kSkipFrames = 6 * 60;   // remap: a control left untouched for 6 s keeps its binding
 
 enum class Page { Main, Controls, Remap };
-enum MainRow { ROW_SCALE, ROW_ANISO, ROW_UPSCALE, ROW_SHARPEN, ROW_VSYNC, ROW_WIDESCREEN, ROW_FLASH_LCANCEL, ROW_VOLUME, ROW_TOUCH_OPACITY, ROW_TOUCH_SIZE, ROW_FULLSCREEN, ROW_ONLINE_DELAY, ROW_CONTROLS, ROW_HUD, ROW_RESUME, ROW_MAIN_COUNT };
+enum MainRow { ROW_SCALE, ROW_ANISO, ROW_UPSCALE, ROW_SHARPEN, ROW_VSYNC, ROW_WIDESCREEN, ROW_FLASH_LCANCEL, ROW_VOLUME, ROW_TOUCH_OPACITY, ROW_TOUCH_SIZE, ROW_FULLSCREEN, ROW_ONLINE_DELAY, ROW_INPUT_SUGGESTIONS, ROW_CONTROLS, ROW_HUD, ROW_RESUME, ROW_MAIN_COUNT };
 enum ControlsRow { C_DEVICE, C_REMAP, C_STICK_DZ, C_CSTICK_DZ, C_TRIGGER, C_SWAP, C_RUMBLE, C_TEST_RUMBLE, C_MODIFIER, C_RESET, C_BACK };
 struct Device { std::string guid, name; };   // an empty guid is the keyboard
 
@@ -94,6 +94,7 @@ const char* main_name(int r) {
     case ROW_TOUCH_SIZE: return "Touch controls size";
     case ROW_FULLSCREEN: return "Full screen";
     case ROW_ONLINE_DELAY: return "Online input delay (next match)";
+    case ROW_INPUT_SUGGESTIONS: return "Reduce high ping effects by 16.7 ms";
     case ROW_CONTROLS: return "Controls";
     case ROW_HUD: return "Performance HUD";
     case ROW_RESUME: return "Resume game";
@@ -115,6 +116,7 @@ std::string main_value(int r, const RuntimeSettings& s) {
     case ROW_TOUCH_SIZE: std::snprintf(b, sizeof b, "%.2fx", s.overlay_scale); return b;
     case ROW_FULLSCREEN: return s.fullscreen ? "On" : "Off";
     case ROW_ONLINE_DELAY: if (s.online_delay <= 1) return "1 frame (lowest)"; std::snprintf(b, sizeof b, "%d frames", s.online_delay); return b;
+    case ROW_INPUT_SUGGESTIONS: return s.input_suggestions ? "On" : "Off";
     case ROW_CONTROLS: return ">";
     case ROW_HUD: return s.hud ? "On" : "Off";
   }
@@ -136,6 +138,7 @@ int main_step(int r, int dir, RuntimeSettings& s) {
     case ROW_TOUCH_SIZE: s.overlay_scale = std::clamp(s.overlay_scale + 0.1f * dir, 0.7f, 1.4f); return (int)MenuChange::TouchControls;
     case ROW_FULLSCREEN: s.fullscreen = !s.fullscreen; return (int)MenuChange::Fullscreen;
     case ROW_ONLINE_DELAY: { const int d = std::clamp(s.online_delay + dir, 1, 9); if (d == s.online_delay) return -1; s.online_delay = d; return (int)MenuChange::OnlineDelay; }
+    case ROW_INPUT_SUGGESTIONS: s.input_suggestions = !s.input_suggestions; return (int)MenuChange::InputSuggestions;
     case ROW_HUD: s.hud = !s.hud; return (int)MenuChange::Hud;
   }
   return -1;

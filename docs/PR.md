@@ -96,6 +96,8 @@ All in `tools/mac/`, written up for agents in the `fix-logs` skill (`desync.md`,
 
 - Port Slippi 3.7.0's input suggestions and match quality (slippi-rust-extensions crates) to C++, with their unit tests.
 
+- Feed input suggestions from the GameCube adapter (game poll counts, origins, a report callback on the read thread, held back while the in-game menu has the pads) and add the "Reduce high ping effects by 16.7 ms" setting (default on) to the in-game menu and both dashboards.
+
 ## Before opening
 
 - Drop the "Fork workflow" section from `CLAUDE.md`, `.agents/skills/fix-logs`, `.claude/skills/fix-logs` and this file.

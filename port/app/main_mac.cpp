@@ -159,7 +159,7 @@ static void save_launcher_ini(const fs::path& path, const host::LauncherSettings
       << "\nsharpness=" << settings.sharpness << "\noverlay=" << settings.overlay_opacity << "\noverlay_scale=" << settings.overlay_scale
       << "\nscale=" << settings.scale << "\nanisotropy=" << settings.anisotropy << "\nupscaler=" << settings.upscaler << "\nvsync=" << (settings.vsync ? 1 : 0)
       << "\nfullscreen=" << (settings.fullscreen ? 1 : 0) << "\nvolume=" << settings.volume << "\nhud=" << (settings.hud ? 1 : 0)
-      << "\nonline_delay=" << settings.online_delay << "\ndiscord=" << (settings.discord_enabled ? 1 : 0) << "\ndiscord_rank=" << (settings.discord_show_rank ? 1 : 0) << "\n";
+      << "\nonline_delay=" << settings.online_delay << "\ninput_suggestions=" << (settings.input_suggestions ? 1 : 0) << "\ndiscord=" << (settings.discord_enabled ? 1 : 0) << "\ndiscord_rank=" << (settings.discord_show_rank ? 1 : 0) << "\n";
   for (const host::ControllerConfig& c : host::controller_configs()) out << "controller." << c.guid << "=" << c.port << "|" << c.map.serialize() << "\n";
   out << "keyboard=" << host::keyboard_map().serialize() << "\n";
 }
@@ -283,6 +283,7 @@ int dashdance_main(int argc, char** argv) {
       else if (const char* v = value("online=")) settings.online = *v == '1';
       else if (const char* v = value("ar=")) settings.ar_mode = *v == '1';
       else if (const char* v = value("online_delay=")) settings.online_delay = std::clamp(std::atoi(v), 1, 9);
+      else if (const char* v = value("input_suggestions=")) settings.input_suggestions = *v == '1';
       else if (const char* v = value("sharpness=")) settings.sharpness = std::clamp((float)std::atof(v), 0.0f, 1.0f);
       else if (const char* v = value("overlay=")) settings.overlay_opacity = std::clamp((float)std::atof(v), 0.0f, 1.0f);
       else if (const char* v = value("overlay_scale=")) settings.overlay_scale = std::clamp((float)std::atof(v), 0.7f, 1.4f);
@@ -390,6 +391,8 @@ int dashdance_main(int argc, char** argv) {
   if (show_launcher || !replay_file.empty()) { gfx.efb_scale = settings.scale; gfx.anisotropy = settings.anisotropy; gfx.vsync = settings.vsync; if (!volume_arg) volume = settings.volume; }
   if (!delay_arg) online.delay = std::clamp(settings.online_delay, 1, 9);   // the player's choice; each frame of delay adds 16.7 ms
   host::log("slippi: online input delay %d frame%s (%.1f ms)", online.delay, online.delay == 1 ? "" : "s", online.delay * 16.667);
+  online.input_suggestions = settings.input_suggestions;   // "Reduce high ping effects by 16.7 ms"
+  host::log("slippi: input suggestions %s", online.input_suggestions ? "on" : "off");
   host::touch_set_scale(settings.overlay_scale);
   host::touch_set_game_aspect(gfx.widescreen ? 16.0f / 9.0f : 4.0f / 3.0f);
   if (profile_dir.empty()) profile_dir = (support / "User").string();
@@ -482,7 +485,7 @@ int dashdance_main(int argc, char** argv) {
       host::RuntimeSettings rs;
       rs.scale = gfx.efb_scale; rs.anisotropy = gfx.anisotropy; rs.sharpness = gfx.sharpness; rs.upscaler = gfx.upscaler; rs.widescreen = gfx.widescreen; rs.vsync = gfx.vsync;
       rs.volume = std::clamp(volume, 0, 100); rs.overlay_opacity = settings.overlay_opacity; rs.overlay_scale = settings.overlay_scale;
-      rs.hud = settings.hud; rs.fullscreen = settings.fullscreen || fullscreen_arg; rs.online_delay = online.delay; rs.flash_failed_lcancel = settings.flash_failed_lcancel;
+      rs.hud = settings.hud; rs.fullscreen = settings.fullscreen || fullscreen_arg; rs.online_delay = online.delay; rs.input_suggestions = online.input_suggestions; rs.flash_failed_lcancel = settings.flash_failed_lcancel;
       host::menu_init(rs, [backend, &gfx](const host::RuntimeSettings& s, host::MenuChange what) {
         switch (what) {
           case host::MenuChange::Graphics: gfx.efb_scale = s.scale; gfx.anisotropy = s.anisotropy; gfx.sharpness = s.sharpness; gfx.upscaler = s.upscaler; gfx.vsync = s.vsync; gx::metal_set_options(backend, gfx); break;
@@ -490,6 +493,7 @@ int dashdance_main(int argc, char** argv) {
           case host::MenuChange::TouchControls: host::touch_set_opacity(s.overlay_opacity); host::touch_set_scale(s.overlay_scale); break;
           case host::MenuChange::Fullscreen: host::window_set_fullscreen(s.fullscreen); break;
           case host::MenuChange::OnlineDelay: slippi::online::config().delay = s.online_delay; host::log("slippi: online input delay now %d frame%s, from the next match", s.online_delay, s.online_delay == 1 ? "" : "s"); break;
+          case host::MenuChange::InputSuggestions: slippi::online::config().input_suggestions = s.input_suggestions; host::log("slippi: input suggestions now %s, from the next game", s.input_suggestions ? "on" : "off"); break;
           case host::MenuChange::Hud: case host::MenuChange::Widescreen: case host::MenuChange::FailedLCancelFlash: break;
         }
       });
@@ -551,6 +555,7 @@ int dashdance_main(int argc, char** argv) {
     settings.scale = rs.scale; settings.anisotropy = rs.anisotropy; settings.sharpness = rs.sharpness; settings.upscaler = rs.upscaler; settings.widescreen = rs.widescreen; settings.vsync = rs.vsync;
     settings.volume = rs.volume; settings.overlay_opacity = rs.overlay_opacity; settings.overlay_scale = rs.overlay_scale; settings.hud = rs.hud; settings.fullscreen = rs.fullscreen; settings.flash_failed_lcancel = rs.flash_failed_lcancel;
     if (!delay_arg) settings.online_delay = rs.online_delay;   // a one-off --online-delay is not saved as the player's setting
+    settings.input_suggestions = rs.input_suggestions;
     if (settings.iso.empty()) settings.iso = iso_arg;
     std::error_code ec; if (fs::is_directory(support, ec)) save_launcher_ini(remembered, settings);
   }
