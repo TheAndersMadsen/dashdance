@@ -91,8 +91,6 @@ void usage() {
       "  --profile-dir DIR        app profile root (settings, Aurora preferences)\n"
       "  --cache-dir DIR          pipeline cache and ISO hash cache\n"
       "  --log-file FILE          console log copy\n"
-      "  --lossless-inspect       list the tables of a Lossless Adapter in configuration mode (plugged in with its button held)\n"
-      "  --lossless-setup         install the Dashdance profile on it (first plugged controller on port 1) and boot PC mode\n"
       "  --script FILE            deterministic input script (replaces physical input)\n"
       "  --ar                     AR Mode (visionOS): play on a floating screen in the room after Play\n"
       "  --frames N               stop after N retraces\n"
@@ -254,13 +252,6 @@ int dashdance_main(int argc, char** argv) {
     else if (a == "--trace-calls") o.trace_calls = true;
     else if (a == "--quiet") o.quiet = true;
     else if (a == "--hang-watch") o.hang_watch = std::atof(next());
-    else if (a == "--lossless-inspect" || a == "--lossless-setup") {   // the Lossless Adapter in configuration mode: list its tables, or install the Dashdance profile
-      host::LosslessConfigInfo info;
-      if (!host::lossless_config_inspect(info)) { std::fprintf(stderr, "lossless adapter: %s (plug it in while holding its button; the LED turns white)\n", info.error.c_str()); return 1; }
-      std::printf("lossless adapter: %s\n", info.summary.c_str());
-      if (a == "--lossless-setup") { std::string message; const bool ok = host::lossless_config_install(message); std::printf("lossless adapter: %s\n", message.c_str()); return ok ? 0 : 1; }
-      return 0;
-    }
     else if (!a.empty() && a[0] != '-' && iso_arg.empty()) iso_arg = a;   // drag-and-drop / open-with launch
     else { usage(); return 2; }
   }
