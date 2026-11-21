@@ -171,6 +171,8 @@ class NetplayClient {
   void StartSlippiGame();
   void SendSlippiPad(std::unique_ptr<Pad> pad);
   void SendSlippiPadSuggestion(int32_t target_frame, uint32_t seq, const uint8_t* pad);
+  // Adapter read thread: turns an adapter report into an input suggestion and sends it through the live client, if any.
+  static void SendInputSuggestionForAdapterReport(const uint64_t game_poll_counts[4], const uint8_t* payload, size_t payload_len);
   void FillDroppedPlayerInputs(int32_t frame);
   void SetMatchSelections(PlayerSelections& s);
   void SendGamePrepStep(const GamePrepStepResults& s);

@@ -183,6 +183,18 @@ void DirectCodes::AddOrUpdateCode(const std::string& code) {
 }
 
 // ---------------------------------------------------------------- netplay client
+// The adapter read thread sends input suggestions through the live client. The pointer is set and cleared under this
+// mutex so the adapter thread never uses a client that has started tearing down (SlippiNetplay.cpp, Slippi 3.7.0).
+static std::mutex s_suggestion_sink_mutex;
+static NetplayClient* s_suggestion_sink = nullptr;
+
+void NetplayClient::SendInputSuggestionForAdapterReport(const uint64_t game_poll_counts[4], const uint8_t* payload, size_t payload_len) {
+  std::lock_guard<std::mutex> lk(s_suggestion_sink_mutex);
+  if (!s_suggestion_sink) return;
+  input_suggestions::Suggestion suggestion = input_suggestions::on_adapter_report(game_poll_counts, payload, payload_len);
+  if (suggestion.is_valid) s_suggestion_sink->SendSlippiPadSuggestion(suggestion.target_frame, suggestion.seq, suggestion.pad);
+}
+
 NetplayClient::NetplayClient(std::vector<std::string> addrs, std::vector<uint16_t> ports, uint8_t remote_player_count, uint16_t local_port,
                              bool is_decider, uint8_t player_idx, const std::string& bind_address) {
   host::log("slippi: netplay client: local port %u, decider %d, player index %u, %u remote players", local_port, is_decider, player_idx, remote_player_count);
@@ -244,9 +256,15 @@ NetplayClient::NetplayClient(std::vector<std::string> addrs, std::vector<uint16_
   }
   status_.store(ConnectStatus::INITIATED, std::memory_order_release);
   thread_ = std::thread(&NetplayClient::ThreadFunc, this);
+  std::lock_guard<std::mutex> lk(s_suggestion_sink_mutex);
+  s_suggestion_sink = this;
 }
 
 NetplayClient::~NetplayClient() {
+  {
+    std::lock_guard<std::mutex> lk(s_suggestion_sink_mutex);
+    if (s_suggestion_sink == this) s_suggestion_sink = nullptr;
+  }
   do_loop_.store(false);
   if (client_) wakeup_thread(client_);
   if (thread_.joinable()) thread_.join();

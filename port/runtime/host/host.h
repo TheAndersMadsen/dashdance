@@ -162,6 +162,20 @@ bool gcadapter_status(GcAdapterStatus& out);   // false when no adapter is open
 void gcadapter_rumble(int port, bool on);
 // PADRecalibrate support: re-capture the adapter's stick/trigger neutrals (-1 = every port).
 void gcadapter_recalibrate(int port);
+// Input suggestions (Slippi 3.7.0). PADRead sets g_game_pad_poll around its input_poll, so the adapter can count the
+// game's own reads of each port (launcher and UI reads don't count). The report callback runs on the adapter read
+// thread for every report stored, with the game's poll counts at the time; it must never block.
+inline thread_local bool g_game_pad_poll = false;
+using GcAdapterReportCallback = void (*)(const uint64_t game_poll_counts[4], const uint8_t* payload, size_t payload_len);
+void gcadapter_set_report_callback(GcAdapterReportCallback callback);
+uint64_t gcadapter_game_poll_count(int port);
+// Whether the game's most recent poll took this port from the adapter.
+bool gcadapter_feeds_game_port(int port);
+// The neutral subtracted from the port's sticks and triggers before the game sees them (stick x/y, c-stick x/y, L, R,
+// centred on 128 like the adapter's bytes); false until it is captured.
+bool gcadapter_game_origin(int port, uint8_t origin[6]);
+// The in-game menu has the pads (it zeroes what the game reads): adapter reports are not passed on meanwhile.
+void gcadapter_set_game_input_replaced(bool replaced);
 // Input Integrity Lossless Adapter in PC (XInput) mode, read natively on macOS (lossless_xinput.cpp): fills
 // ports with a controller and returns their mask; status false when the adapter is absent or in another mode.
 uint32_t lossless_poll(PadState out[4]);

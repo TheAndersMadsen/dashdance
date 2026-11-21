@@ -26,8 +26,9 @@ struct RuntimeSettings {
   bool hud = false;              // performance HUD
   bool fullscreen = false;       // macOS
   int online_delay = 2;          // Slippi Online input delay frames (1..9), used from the next match; each frame adds 16.7 ms
+  bool input_suggestions = true; // Slippi 3.7.0 input suggestions ("Reduce high ping effects by 16.7 ms"), from the next game
 };
-enum class MenuChange { Graphics, Volume, TouchControls, Fullscreen, Hud, Widescreen, OnlineDelay, FailedLCancelFlash };
+enum class MenuChange { Graphics, Volume, TouchControls, Fullscreen, Hud, Widescreen, OnlineDelay, InputSuggestions, FailedLCancelFlash };
 // `apply` runs on the simulation thread whenever the player changes a value.
 void menu_init(const RuntimeSettings& initial, std::function<void(const RuntimeSettings&, MenuChange)> apply);
 bool menu_is_open();

@@ -909,7 +909,15 @@ void input_poll(PadState out[4]) {
       if (g_capture.load()) { pads[0] = {}; pads[0].err = 0; }
     }
   } ui{out};
-  struct MenuPass { PadState* pads; ~MenuPass() { menu_frame(pads); } } menu_pass{out};   // after every input source, before the UI snapshot
+  struct MenuPass {
+    PadState* pads;
+    ~MenuPass() {
+      menu_frame(pads);
+      // While the menu (or a UI capture) has the pads, what the game reads is not what the adapter reports, so input
+      // suggestions built from those reports would be wrong: hold them back.
+      if (g_game_pad_poll) gcadapter_set_game_input_replaced(menu_is_open() || g_capture.load());
+    }
+  } menu_pass{out};   // after every input source, before the UI snapshot
   for (int i = 0; i < 4; ++i) { out[i] = {}; out[i].err = -1; }
   if (pad_file(out)) return;
   if (g_scripted) {

@@ -254,6 +254,7 @@ void start_input_suggestions(uint8_t delay, uint8_t input_source_port) {
   game.source_port = input_source_port;
   game.source_is_adapter = input_source_port < 4 && input_suggestions::adapter_has_port(input_source_port);
   input_suggestions::start_game(game);
+  input_suggestions::connect_adapter_reports();   // the adapter's reports now reach the live client
 }
 
 // Tells input suggestions how many times the game has polled the controller, what it sent for this frame and whether it

@@ -377,7 +377,7 @@ API_AVAILABLE(macos(26.0))
 @property(nonatomic) NSStackView* readinessStack; @property(nonatomic) std::string readinessSignature; @property(nonatomic) NSStackView* controllersStack; @property(nonatomic) NSUInteger controllerCount; @property(nonatomic) std::string controllerSignature; @property(nonatomic) unsigned tickCount; @property(nonatomic, copy) NSString* remapGuid; @property(nonatomic) int capturing; @property(nonatomic) BOOL armed; @property(nonatomic) NSArray<NSButton*>* remapButtons;
 // display
 @property(nonatomic) NSSwitch* discordSwitch; @property(nonatomic) NSSwitch* discordRankSwitch; @property(nonatomic) NSTextField* regionLabel;
-@property(nonatomic) NSSegmentedControl* scaleControl; @property(nonatomic) NSSegmentedControl* anisoControl; @property(nonatomic) NSSegmentedControl* upscalerControl; @property(nonatomic) NSSwitch* vsyncSwitch; @property(nonatomic) NSSwitch* fullscreenSwitch; @property(nonatomic) NSSwitch* widescreenSwitch; @property(nonatomic) NSSwitch* flashLCancelSwitch; @property(nonatomic) NSSlider* sharpness; @property(nonatomic) NSSwitch* onlineSwitch; @property(nonatomic) NSSegmentedControl* delayControl;
+@property(nonatomic) NSSegmentedControl* scaleControl; @property(nonatomic) NSSegmentedControl* anisoControl; @property(nonatomic) NSSegmentedControl* upscalerControl; @property(nonatomic) NSSwitch* vsyncSwitch; @property(nonatomic) NSSwitch* fullscreenSwitch; @property(nonatomic) NSSwitch* widescreenSwitch; @property(nonatomic) NSSwitch* flashLCancelSwitch; @property(nonatomic) NSSlider* sharpness; @property(nonatomic) NSSwitch* onlineSwitch; @property(nonatomic) NSSegmentedControl* delayControl; @property(nonatomic) NSSwitch* suggestionsSwitch;
 - (void)acceptDroppedDisc:(NSString*)path;
 - (void)openEditor:(MUControllerEditor*)editor;
 - (void)play;
@@ -1246,6 +1246,9 @@ static NSButton* pairing_button(NSString* title, NSString* sym, id target, SEL a
   self.delayControl = [self segments:delays selected:self.settings->online_delay > 4 ? 4 : MAX(0, self.settings->online_delay - 1)];
   [s addArrangedSubview:[self row:@"Online input delay (frames)" symbol:@"timer" control:self.delayControl]];
   [s addArrangedSubview:label(@"Each frame of delay adds 16.7 ms. 1 is the lowest latency on a stable, nearby connection; 2 is Slippi's default and rolls back less on Wi-Fi.", 11, NSFontWeightRegular, 0.6)];
+  self.suggestionsSwitch = [self toggle:self.settings->input_suggestions];
+  [s addArrangedSubview:[self row:@"Reduce high ping effects by 16.7 ms" symbol:@"bolt.horizontal" control:self.suggestionsSwitch]];
+  [s addArrangedSubview:label(@"Opponents' inputs from between frames predict their next frame, and a GameCube adapter sends yours the same way, so a laggy connection feels a frame closer. Used from the next game.", 11, NSFontWeightRegular, 0.6)];
   NSStackView* presetRow = [[NSStackView alloc] init]; presetRow.orientation = NSUserInterfaceLayoutOrientationHorizontal; presetRow.spacing = 10; presetRow.alignment = NSLayoutAttributeCenterY;
   [presetRow addArrangedSubview:[self button:@"Competitive preset" symbol:@"bolt.fill" action:@selector(applyCompetitivePreset)]];
   [presetRow addArrangedSubview:label(@"Full screen, 2× resolution (lowest latency that still looks crisp), 16× filtering, display sync, 4:3, no sharpening.", 11, NSFontWeightRegular, 0.6)];
@@ -1548,6 +1551,7 @@ static NSButton* pairing_button(NSString* title, NSString* sym, id target, SEL a
   self.settings->flash_failed_lcancel = self.flashLCancelSwitch.state == NSControlStateValueOn;
   self.settings->online = self.onlineSwitch.state == NSControlStateValueOn;
   if (self.delayControl) self.settings->online_delay = [self selectedDelay];
+  if (self.suggestionsSwitch) self.settings->input_suggestions = self.suggestionsSwitch.state == NSControlStateValueOn;
   self.settings->sharpness = (float)self.sharpness.doubleValue;
   [NSApp stopModalWithCode:NSModalResponseOK];
 }
