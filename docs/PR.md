@@ -94,6 +94,8 @@ All in `tools/mac/`, written up for agents in the `fix-logs` skill (`desync.md`,
 
 - Correct the Vision Pro AR screen’s texture lifetime, eye/depth rendering, colors and aspect ratio; keep its touch/menu coordinates and image-quality settings consistent with the displayed picture.
 
+- The headless runtime links again (it lacked `gcadapter_recalibrate`).
+
 ## Before opening
 
 - Drop the "Fork workflow" section from `CLAUDE.md`, `.agents/skills/fix-logs`, `.claude/skills/fix-logs` and this file.
