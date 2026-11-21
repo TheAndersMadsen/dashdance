@@ -116,6 +116,12 @@ add_test(NAME port_slippi_record_events COMMAND port_slippi_record_events_test)
 add_executable(port_slippi_net_diag_test tests/slippi_net_diag_test.cpp runtime/hle/slippi_net_diag.cpp)
 target_include_directories(port_slippi_net_diag_test PRIVATE runtime/hle runtime/host runtime/ppc)
 add_test(NAME port_slippi_net_diag COMMAND port_slippi_net_diag_test)
+add_executable(port_slippi_input_suggestions_test tests/slippi_input_suggestions_test.cpp runtime/hle/slippi_input_suggestions.cpp)
+target_include_directories(port_slippi_input_suggestions_test PRIVATE runtime/hle runtime/host runtime/ppc)
+add_test(NAME port_slippi_input_suggestions COMMAND port_slippi_input_suggestions_test)
+add_executable(port_slippi_match_quality_test tests/slippi_match_quality_test.cpp runtime/hle/slippi_match_quality.cpp)
+target_include_directories(port_slippi_match_quality_test PRIVATE runtime/hle runtime/host runtime/ppc)
+add_test(NAME port_slippi_match_quality COMMAND port_slippi_match_quality_test)
 add_executable(port_slippi_matchmaking_protocol_test tests/slippi_matchmaking_protocol_test.cpp
   runtime/hle/slippi_matchmaking_protocol.cpp)
 target_include_directories(port_slippi_matchmaking_protocol_test PRIVATE runtime/hle third_party)
@@ -245,7 +251,8 @@ foreach(port_test port_frame_queue_test port_memory_range_test port_texture_test
                   port_ppc_dispatch_test port_pad_rumble_test port_slippi_game_file_test
                   port_slippi_record_events_test port_slippi_matchmaking_protocol_test
                   port_input_script_equivalence_test port_gx_aurora_bridge_test port_metal_frontend_test port_file_identity_test
-                  port_scene_trace_test port_loaded_module_digest_test port_fatal_log_test)
+                  port_scene_trace_test port_loaded_module_digest_test port_fatal_log_test
+                  port_slippi_input_suggestions_test port_slippi_match_quality_test)
   if(NOT TARGET ${port_test})
     continue()
   endif()
