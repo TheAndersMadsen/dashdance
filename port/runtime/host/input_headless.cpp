@@ -34,4 +34,5 @@ void input_poll(PadState out[4]) {
 uint32_t gcadapter_poll(PadState[4]) { return 0; }
 void gcadapter_rumble(int, bool) {}
 void gcadapter_shutdown() {}
+void gcadapter_recalibrate(int) {}
 }  // namespace host

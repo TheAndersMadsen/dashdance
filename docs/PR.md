@@ -100,6 +100,10 @@ All in `tools/mac/`, written up for agents in the `fix-logs` skill (`desync.md`,
 
 - Correct the Vision Pro AR screen’s texture lifetime, eye/depth rendering, colors and aspect ratio; keep its touch/menu coordinates and image-quality settings consistent with the displayed picture.
 
+- Slippi 3.7.0 game-file links: archives such as `GameSetup_gui.dat` and `SlippiCSS_gui.dat` carry `slp:` symbols in place of Nintendo assets; the loader copies those assets in from the player's disc (`slippi_gamefile_links.*`, a C++ port of slippi-rust-extensions' `hsd` crate) and serves nothing, with a clear log line, when a link cannot be resolved. `tools/gamefile_links/golden.py` checks the output is byte-identical to the Rust on your own ISO.
+
+- The headless runtime links again (it lacked `gcadapter_recalibrate`).
+
 ## Before opening
 
 - Drop the "Fork workflow" section from `CLAUDE.md`, `.agents/skills/fix-logs`, `.claude/skills/fix-logs` and this file.

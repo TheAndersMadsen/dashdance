@@ -68,6 +68,12 @@ if(NOT WIN32)
 endif()
 add_test(NAME port_slippi_text COMMAND port_slippi_text_test)
 
+# Slippi 3.7.0 game-file links (slp: symbols in HSD archives), no game data needed.
+add_executable(port_slippi_gamefile_links_test tests/slippi_gamefile_links_test.cpp runtime/hle/slippi_gamefile_links.cpp)
+target_include_directories(port_slippi_gamefile_links_test PRIVATE runtime/hle)
+target_compile_features(port_slippi_gamefile_links_test PRIVATE cxx_std_17)
+add_test(NAME port_slippi_gamefile_links COMMAND port_slippi_gamefile_links_test)
+
 add_executable(port_portable_file_test tests/portable_file_test.cpp)
 target_include_directories(port_portable_file_test PRIVATE runtime/host)
 add_test(NAME port_portable_files COMMAND port_portable_file_test)
@@ -329,7 +335,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PROJECT_SOURCE
 # a portable executable through a source glob.
 set(PORT_PORTABLE_RUNTIME_SOURCES
   runtime/ppc/ppc_runtime.cpp runtime/ppc/interp.cpp runtime/ppc/numeric.cpp
-  runtime/hle/ax_ucode.cpp runtime/hle/exi_slippi.cpp
+  runtime/hle/ax_ucode.cpp runtime/hle/exi_slippi.cpp runtime/hle/slippi_gamefile_links.cpp
   runtime/hle/hle_card.cpp runtime/hle/hle_dvd.cpp runtime/hle/dvd_read_worker.cpp runtime/hle/hle_os.cpp
   runtime/hle/hle_pad.cpp runtime/hle/pad_rumble.cpp runtime/hle/hle_stubs.cpp runtime/hle/jukebox.cpp
   runtime/hle/slippi_net.cpp runtime/hle/slippi_matchmaking_protocol.cpp runtime/hle/slippi_net_diag.cpp runtime/hle/slippi_online.cpp runtime/hle/slippi_offline.cpp runtime/hle/slippi_input_suggestions.cpp runtime/hle/slippi_match_quality.cpp
@@ -681,7 +687,7 @@ if(MELEE_BUILD_EXPERIMENTAL_PORT)
 # Host runtime: CPU helpers, memory, HLE, host services.
 set(RUNTIME_SOURCES
   runtime/ppc/ppc_runtime.cpp runtime/ppc/interp.cpp runtime/ppc/numeric.cpp
-  runtime/hle/ax_ucode.cpp runtime/hle/exi_slippi.cpp
+  runtime/hle/ax_ucode.cpp runtime/hle/exi_slippi.cpp runtime/hle/slippi_gamefile_links.cpp
   runtime/hle/hle_card.cpp runtime/hle/hle_dvd.cpp runtime/hle/dvd_read_worker.cpp runtime/hle/hle_os.cpp runtime/hle/hle_pad.cpp
   runtime/hle/hle_stubs.cpp runtime/hle/pad_rumble.cpp runtime/hle/jukebox.cpp runtime/hle/slippi_net.cpp runtime/hle/slippi_input_suggestions.cpp runtime/hle/slippi_match_quality.cpp
   runtime/hle/slippi_matchmaking_protocol.cpp runtime/hle/slippi_online.cpp runtime/hle/slippi_offline.cpp runtime/hle/slippi_playback.cpp runtime/hle/slippi_report.cpp
