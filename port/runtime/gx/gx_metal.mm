@@ -200,6 +200,13 @@ class MetalBackend final : public Backend {
   void submit_frame(const Frame& frame) override { submit(frame, nullptr); }
   void submit_frame(const Frame& frame, const DrawMatrices* overrides) override { submit(frame, overrides); }
   void set_skip_present(bool skip) override { skip_present_ = skip; }
+  // While nobody can see the window (Mission Control or another space in front of a full-screen game, minimised,
+  // covered) frames still execute, so EFB copies stay correct, but nothing asks the display for a drawable.
+  void set_window_visible(bool visible) {
+    if (window_hidden_ == !visible) return;
+    window_hidden_ = !visible;
+    host::log("metal: window %s; presenting %s", visible ? "visible" : "not visible", visible ? "resumed" : "paused");
+  }
   void resize(int w, int h) {
     wait_idle();
     client_w_ = std::max(w, 1); client_h_ = std::max(h, 1);
@@ -1309,7 +1316,7 @@ class MetalBackend final : public Backend {
 #if TARGET_OS_VISION
             immersive = ar_enabled_ && dashdance_vision_space_opened();
 #endif
-            if (!skip_present_ && !immersive && present_efb(c)) presented = true;
+            if (!skip_present_ && !window_hidden_ && !immersive && present_efb(c)) presented = true;
             // The Vision Pro quad mirrors what was presented — and when the flat window is
             // occluded by the immersive space the quad is the primary display, so the mirror
             // renders even while the flat present is being drained.
@@ -1497,6 +1504,7 @@ class MetalBackend final : public Backend {
   uint32_t fx_in_w_ = 0, fx_in_h_ = 0, fx_out_w_ = 0, fx_out_h_ = 0;
   int fx_quality_ = -1;
   bool fx_supported_ = false, fx_reported_ = false;
+  bool window_hidden_ = false;
   bool efb_needs_clear_ = true, skip_present_ = false, ring_full_logged_ = false, pending_capture_ = false, overload_warning_ = false;
   int scale_ = 1, efb_w_ = EFB_WIDTH, efb_h_ = EFB_HEIGHT, slot_ = 0;
   uint64_t frame_counter_ = 0, frames_presented_ = 0, backend_id_ = (uint64_t)(uintptr_t)this;
@@ -1549,6 +1557,7 @@ class MetalThreaded final : public Backend {
   void set_options(const MetalOptions& o) { std::lock_guard<std::mutex> lock(pending_mutex_); pending_options_ = o; pending_options_set_ = true; }
   void set_overlay(OverlayProvider p) { std::lock_guard<std::mutex> lock(pending_mutex_); pending_overlay_ = std::move(p); pending_overlay_set_ = true; }
   void set_skip_present(bool skip) { std::lock_guard<std::mutex> lock(pending_mutex_); pending_skip_ = skip; pending_skip_set_ = true; }
+  void set_window_visible(bool visible) { std::lock_guard<std::mutex> lock(pending_mutex_); pending_visible_ = visible; pending_visible_set_ = true; }
   uint64_t frames_presented() const { return frames_presented_.load(); }
 
  private:
@@ -1558,6 +1567,7 @@ class MetalThreaded final : public Backend {
     if (pending_options_set_) { inner_->set_options(pending_options_); pending_options_set_ = false; }
     if (pending_overlay_set_) { inner_->set_overlay(std::move(pending_overlay_)); pending_overlay_set_ = false; }
     if (pending_skip_set_) { inner_->set_skip_present(pending_skip_); pending_skip_set_ = false; }
+    if (pending_visible_set_) { inner_->set_window_visible(pending_visible_); pending_visible_set_ = false; }
   }
   void run() {
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
@@ -1618,6 +1628,7 @@ class MetalThreaded final : public Backend {
   std::mutex pending_mutex_;
   bool pending_resize_ = false, pending_options_set_ = false, pending_overlay_set_ = false, pending_skip_set_ = false;
   bool pending_skip_ = false;
+  bool pending_visible_ = true, pending_visible_set_ = false;
   int pending_w_ = 0, pending_h_ = 0;
   MetalOptions pending_options_;
   OverlayProvider pending_overlay_;
@@ -1655,6 +1666,9 @@ Backend* create_metal_backend(void* layer, int w, int h, const MetalOptions& opt
 }
 void metal_scale_caps(int device_cap, int thermal_cap) { g_device_scale_cap.store(std::max(0, device_cap)); g_thermal_scale_cap.store(std::max(0, thermal_cap)); }
 void metal_resize(Backend* backend, int w, int h) { if (MetalThreaded* t = threaded(backend)) t->resize(w, h); else static_cast<MetalBackend*>(backend)->resize(w, h); }
+void metal_set_window_visible(Backend* backend, bool visible) {
+  if (MetalThreaded* t = threaded(backend)) t->set_window_visible(visible); else static_cast<MetalBackend*>(backend)->set_window_visible(visible);
+}
 void metal_set_skip_present(Backend* backend, bool skip) { if (MetalThreaded* t = threaded(backend)) t->set_skip_present(skip); else static_cast<MetalBackend*>(backend)->set_skip_present(skip); }
 void metal_set_options(Backend* backend, const MetalOptions& options) { if (MetalThreaded* t = threaded(backend)) t->set_options(options); else static_cast<MetalBackend*>(backend)->set_options(options); }
 uint64_t metal_frames_presented(Backend* backend) { if (MetalThreaded* t = threaded(backend)) return t->frames_presented(); return static_cast<MetalBackend*>(backend)->frames_presented(); }

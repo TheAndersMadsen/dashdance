@@ -20,6 +20,8 @@
 #include "slippi_playback.h"
 #include "window.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -479,6 +481,10 @@ int dashdance_main(int argc, char** argv) {
     for (const host::ReadinessItem& item : host::competitive_readiness((int)host::window_refresh_rate(), settings.fullscreen || fullscreen_arg, online.delay))
       host::log("readiness: %s %s", item.ok ? "ok  " : "note", item.text.c_str());
     host::window_set_resize_callback([backend](int w, int h) { gx::metal_resize(backend, w, h); });
+    // Nobody can see the window (Mission Control or another space in front of full screen, minimised, covered): stop
+    // asking the display for drawables until it is visible again. A full-screen game that kept presenting while Mission
+    // Control took the display over once wedged the whole Mac (docs/TECHNICAL.md, "Full screen and Mission Control").
+    host::window_set_visibility_callback([backend](bool visible) { gx::metal_set_window_visible(backend, visible); });
     if (settings.fullscreen || fullscreen_arg) host::window_set_fullscreen(true);
     gx::metal_set_overlay(backend, host::game_overlay);
     {
@@ -532,6 +538,22 @@ int dashdance_main(int argc, char** argv) {
     code = 3;
   }
 
+  // Quitting must always finish. Graphics teardown waits on the GPU and the display, and while the display is wedged
+  // (it happened once with Mission Control over a full-screen game) those waits never return: the app hung with its
+  // music still playing and the screen frozen until a hard reset. So stop presenting and close the audio before
+  // anything that can wait, save the settings, and give the rest 10 s.
+  static std::atomic<const char*> shutdown_stage{"starting"};
+  static std::atomic<bool> shutdown_done{false};
+  std::thread([exit_code = code] {
+    for (int i = 0; i < 100 && !shutdown_done.load(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    if (shutdown_done.load()) return;
+    host::log("shutdown: stuck in %s for 10 s; exiting without the rest of the cleanup", shutdown_stage.load());
+    host::close_log_file();
+    std::_Exit(exit_code);
+  }).detach();
+  if (backend) gx::metal_set_window_visible(backend, false);
+  shutdown_stage = "closing audio";
+  if (audio_opened) { host::audio_close(); audio_opened = false; }
   { uint64_t silent_ms = 0, underruns = host::audio_underruns(&silent_ms);
     double rate_low = 1.0, rate_high = 1.0; host::audio_rate_range(&rate_low, &rate_high);
     host::log("audio: %llu frames played, %llu blocks dropped, %llu gaps (%llu ms held), clock tracking %+.3f%% to %+.3f%%",
@@ -539,17 +561,7 @@ int dashdance_main(int argc, char** argv) {
               (unsigned long long)underruns, (unsigned long long)silent_ms, (rate_low - 1.0) * 100.0, (rate_high - 1.0) * 100.0); }
   gx::init(nullptr);
   host::g_has_window = false;
-  slippi::discord::stop();
-  if (audio_opened) host::audio_close();
-  hle::dvd_shutdown();
-  host::gcadapter_shutdown();
-  slippi::shutdown();
-  if (backend) {
-    host::log("metal: %llu frames presented", (unsigned long long)gx::metal_frames_presented(backend));
-    host::window_set_resize_callback(nullptr);
-    gx::metal_set_overlay(backend, nullptr);
-    delete backend;
-  }
+  shutdown_stage = "saving settings";
   if (host::menu_changed() && !std::getenv("MELEE_PAD_FILE") && !std::getenv("MELEE_MENU_OPEN")) {   // remembered, except for scripted test runs
     const host::RuntimeSettings rs = host::menu_settings();
     settings.scale = rs.scale; settings.anisotropy = rs.anisotropy; settings.sharpness = rs.sharpness; settings.upscaler = rs.upscaler; settings.widescreen = rs.widescreen; settings.vsync = rs.vsync;
@@ -559,6 +571,22 @@ int dashdance_main(int argc, char** argv) {
     if (settings.iso.empty()) settings.iso = iso_arg;
     std::error_code ec; if (fs::is_directory(support, ec)) save_launcher_ini(remembered, settings);
   }
+  shutdown_stage = "stopping Discord presence";
+  slippi::discord::stop();
+  shutdown_stage = "stopping the disc, adapter and Slippi";
+  hle::dvd_shutdown();
+  host::gcadapter_shutdown();
+  slippi::shutdown();
+  shutdown_stage = "stopping the renderer";
+  if (std::getenv("MELEE_TEST_SHUTDOWN_STALL")) std::this_thread::sleep_for(std::chrono::seconds(60));   // test aid: a renderer that never stops
+  if (backend) {
+    host::log("metal: %llu frames presented", (unsigned long long)gx::metal_frames_presented(backend));
+    host::window_set_resize_callback(nullptr);
+    host::window_set_visibility_callback(nullptr);
+    gx::metal_set_overlay(backend, nullptr);
+    delete backend;
+  }
+  shutdown_stage = "closing the window";
   host::power_play_end();
   host::window_destroy();
   ppc::log_aot_diagnostics();
@@ -571,6 +599,7 @@ int dashdance_main(int argc, char** argv) {
     code = 5;
   }
   host::log("result: exit=%d retraces=%u", code, host::retrace_count());
+  shutdown_done = true;
   host::close_log_file();
   return code;
 }

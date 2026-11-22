@@ -50,6 +50,8 @@ enum : uint16_t {
 SDL_Window* g_window = nullptr;
 SDL_MetalView g_view = nullptr;
 ResizeCallback g_resize;
+VisibilityCallback g_visibility;
+bool g_occluded = false, g_hidden = false, g_minimized = false, g_reported_visible = true;
 MessageCallback g_message;
 std::atomic<bool> g_closed{false};
 std::atomic<bool> g_fullscreen_toggle{false};
@@ -689,6 +691,7 @@ void window_set_message_callback(MessageCallback cb) { g_message = std::move(cb)
 void window_input_capture(bool capture) { g_capture.store(capture); }
 bool window_ui_gamecube_pad(PadState& pad) { std::lock_guard<std::mutex> lock(g_ui_mutex); pad = g_ui_pad; return g_ui_gamecube; }
 void window_set_resize_callback(ResizeCallback cb) { g_resize = std::move(cb); }
+void window_set_visibility_callback(VisibilityCallback cb) { g_visibility = std::move(cb); }
 
 void window_pump() {
   if (!g_window) return;
@@ -696,13 +699,27 @@ void window_pump() {
   bool resized = false;
   while (SDL_PollEvent(&event)) {
     switch (event.type) {
-      case SDL_EVENT_QUIT: case SDL_EVENT_WINDOW_CLOSE_REQUESTED: g_closed.store(true); request_exit(0); break;
+      case SDL_EVENT_QUIT: case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+        log("window: %s", event.type == SDL_EVENT_QUIT ? "quit requested by the system" : "window closed");
+        g_closed.store(true); request_exit(0); break;
       case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: case SDL_EVENT_WINDOW_RESIZED: resized = true; break;
+      // Whether anyone can see the window. While nobody can (Mission Control or another space in front of a full-screen
+      // game, a minimised or covered window) the renderer stops asking the display for drawables.
+      case SDL_EVENT_WINDOW_OCCLUDED: g_occluded = true; log("window: occluded"); break;
+      case SDL_EVENT_WINDOW_EXPOSED: if (g_occluded) log("window: exposed"); g_occluded = false; break;
+      case SDL_EVENT_WINDOW_HIDDEN: g_hidden = true; log("window: hidden"); break;
+      case SDL_EVENT_WINDOW_SHOWN: if (g_hidden) log("window: shown"); g_hidden = false; break;
+      case SDL_EVENT_WINDOW_MINIMIZED: g_minimized = true; log("window: minimised"); break;
+      case SDL_EVENT_WINDOW_RESTORED: if (g_minimized) log("window: restored"); g_minimized = false; break;
+      case SDL_EVENT_WINDOW_FOCUS_LOST: log("window: focus lost"); break;
+      case SDL_EVENT_WINDOW_FOCUS_GAINED: log("window: focus gained"); break;
+      case SDL_EVENT_WINDOW_ENTER_FULLSCREEN: log("window: entered full screen"); break;
+      case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN: log("window: left full screen"); break;
       case SDL_EVENT_GAMEPAD_ADDED: open_gamepad(event.gdevice.which); break;
       case SDL_EVENT_GAMEPAD_REMOVED: close_gamepad(event.gdevice.which); break;
       case SDL_EVENT_KEY_DOWN:
         if (event.key.key == SDLK_RETURN && (event.key.mod & SDL_KMOD_ALT) && !event.key.repeat) g_fullscreen_toggle.store(true);
-        if (event.key.key == SDLK_Q && (event.key.mod & SDL_KMOD_GUI) && !event.key.repeat) { g_closed.store(true); request_exit(0); }   // Cmd+Q in full screen
+        if (event.key.key == SDLK_Q && (event.key.mod & SDL_KMOD_GUI) && !event.key.repeat) { log("window: Cmd-Q"); g_closed.store(true); request_exit(0); }   // Cmd+Q in full screen
         if (!event.key.repeat) g_last_key_press.store((int)event.key.scancode);
         if ((event.key.key == SDLK_F1 || event.key.key == SDLK_ESCAPE) && !event.key.repeat && !menu_capturing()) menu_toggle();
         break;
@@ -711,6 +728,11 @@ void window_pump() {
         break;
       default: break;
     }
+  }
+  const bool visible = !g_occluded && !g_hidden && !g_minimized;
+  if (visible != g_reported_visible) {
+    g_reported_visible = visible;
+    if (g_visibility) g_visibility(visible);
   }
   if (resized) {
     refresh_client_size();
