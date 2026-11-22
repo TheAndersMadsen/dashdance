@@ -279,11 +279,13 @@ On 2026-11-21 opening Mission Control over full-screen Dashdance froze the whole
 playing. Two guards came out of it:
 
 - **No presenting while nobody can see the window.** `window_sdl.cpp` turns SDL's occluded, hidden and minimised
-  events into `window_set_visibility_callback`, and the renderer (`metal_set_window_visible`) keeps executing frames
+  events into `window_set_visibility_callback` (macOS only: UIKit's SDL reports minimised whenever the app resigns
+  active, with the game still on screen), and the renderer (`metal_set_window_visible`) keeps executing frames
   but stops asking the display for drawables until the window is visible again. The log says
   `metal: window not visible; presenting paused` and `... resumed`.
 - **Quit always finishes.** `main_mac.cpp` stops presenting and closes the audio first, saves the settings, then gives
-  the rest of the teardown 10 s; past that it logs `shutdown: stuck in <stage>` and exits.
+  each later teardown stage 10 s (75 s for sending Slippi's abandon status and queued game reports); past a stage's
+  deadline it logs `shutdown: stuck in <stage> past its deadline` and exits.
   `MELEE_TEST_SHUTDOWN_STALL=1` simulates a renderer that never stops.
 
 The log also records window events (`window: occluded`, `focus lost`, `entered full screen`) and the wall-clock time
