@@ -107,6 +107,7 @@ All in `tools/mac/`, written up for agents in the `fix-logs` skill (`desync.md`,
 - Port Slippi 3.7.0's input suggestions and match quality (slippi-rust-extensions crates) to C++, with their unit tests.
 
 - Feed input suggestions from the GameCube adapter (game poll counts, origins, a report callback on the read thread, held back while the in-game menu has the pads) and add the "Reduce high ping effects by 16.7 ms" setting (default on) to the in-game menu and both dashboards.
+- Launch into full screen waits for the transition, logs how it went, and retries once (falling back to a window) so a half-finished transition can't leave a black window stuck between a window and full screen.
 
 ## Before opening
 

@@ -287,6 +287,11 @@ playing. Two guards came out of it:
   each later teardown stage 10 s (75 s for sending Slippi's abandon status and queued game reports); past a stage's
   deadline it logs `shutdown: stuck in <stage> past its deadline` and exits.
   `MELEE_TEST_SHUTDOWN_STALL=1` simulates a renderer that never stops.
+- **Launch never stops half way into full screen.** On 2026-11-22 a launch into full screen once left a black titled
+  window beside an empty full-screen Space, and the window could not be dragged back out. `window_settle_fullscreen`
+  now waits for the transition (`SDL_SyncWindow`, up to 2.5 s), logs `window: entering full screen done after N ms`
+  or `did not finish`, and if the window is not where it was asked to be it steps back to a window and asks once
+  more; after a second failure the game stays in a window. Cmd-Q and the in-game menu's Quit row quit in any state.
 
 The log also records window events (`window: occluded`, `focus lost`, `entered full screen`) and the wall-clock time
 of every quit request, so a repeat can be lined up with `log show --predicate 'process == "WindowServer"'`. Mission

@@ -489,7 +489,10 @@ int dashdance_main(int argc, char** argv) {
     // where the game is still on screen and must keep presenting.
     host::window_set_visibility_callback([backend](bool visible) { gx::metal_set_window_visible(backend, visible); });
 #endif
-    if (settings.fullscreen || fullscreen_arg) host::window_set_fullscreen(true);
+    if (settings.fullscreen || fullscreen_arg) {
+      host::window_set_fullscreen(true);
+      host::window_settle_fullscreen(true);   // never start the game with the window half way into full screen
+    }
     gx::metal_set_overlay(backend, host::game_overlay);
     {
       host::RuntimeSettings rs;

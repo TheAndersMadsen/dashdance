@@ -770,6 +770,33 @@ bool window_division_region(float out[4]) {
   return true;
 }
 void window_set_fullscreen(bool enabled) { if (g_window) SDL_SetWindowFullscreen(g_window, enabled); }
+void window_settle_fullscreen(bool wanted) {
+#if defined(__APPLE__) && TARGET_OS_OSX
+  if (!g_window) return;
+  // The Space transition is asynchronous. SDL_SyncWindow pumps events until it finishes (SDL gives up after 2.5 s);
+  // the events stay queued for window_pump.
+  auto settle = [wanted](const char* what) {
+    const Uint64 t0 = SDL_GetTicks();
+    const bool finished = SDL_SyncWindow(g_window);
+    const bool full = (SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN) != 0;
+    log("window: %s %s after %llu ms (%s)", what, full == wanted && finished ? "done" : "did not finish",
+        (unsigned long long)(SDL_GetTicks() - t0), full ? "full screen" : "windowed");
+    return finished && full == wanted;
+  };
+  if (settle(wanted ? "entering full screen" : "leaving full screen")) return;
+  // Half way between the two: step back to a window, then ask again.
+  SDL_SetWindowFullscreen(g_window, false);
+  settle("retry: back to a window");
+  if (!wanted) return;
+  SDL_SetWindowFullscreen(g_window, true);
+  if (!settle("retry: entering full screen")) {
+    SDL_SetWindowFullscreen(g_window, false);
+    settle("full screen failed twice; staying in a window");
+  }
+#else
+  (void)wanted;
+#endif
+}
 
 // ---- launcher services: controllers without a window
 void window_input_init() {
