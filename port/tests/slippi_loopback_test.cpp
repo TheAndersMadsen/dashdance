@@ -10,6 +10,8 @@
 #include <memory>
 #include <vector>
 
+#include "slippi_net_test_stubs.h"
+
 namespace host { void log(const char*, ...) {} }
 
 namespace {
@@ -59,7 +61,8 @@ int main() {
   if (!peer || client.GetSlippiConnectStatus() != Status::CONNECTED) return 1;
   check(peer->address.host == bind.host, "native client is also confined to IPv4 loopback");
 
-  const uint8_t inputs[PAD_DATA_SIZE] = {0x01, 0x00, 0x7F, 0x80, 0x01, 0xFF, 0x22, 0x33};
+  // The game's 12-byte pad report: 8 input bytes, then the RNG bits Slippi 3.7.0 sends with them, then padding.
+  const uint8_t inputs[PAD_FULL_SIZE] = {0x01, 0x00, 0x7F, 0x80, 0x01, 0xFF, 0x22, 0x33, 0x5A, 0xEE, 0xEE, 0xEE};
   client.SendSlippiPad(std::make_unique<Pad>(1, 0, 0x12345678u, inputs));
   std::vector<uint8_t> received;
   deadline = Clock::now() + std::chrono::seconds(5);
@@ -73,14 +76,14 @@ int main() {
   }
   const std::vector<uint8_t> expected = {
     0x80, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0x12, 0x34, 0x56, 0x78,
-    0x01, 0x00, 0x7F, 0x80, 0x01, 0xFF, 0x22, 0x33,
+    0x01, 0x00, 0x7F, 0x80, 0x01, 0xFF, 0x22, 0x33, 0x5A,
   };
-  check(received == expected, "native client sends the exact Slippi pad/checksum wire bytes");
+  check(received == expected, "native client sends the exact Slippi 3.7.0 pad/checksum wire bytes (9 per frame)");
 
   // Reference peer sends one valid remote frame through the same ENet channel.
   const std::vector<uint8_t> remote = {
     0x80, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0x87, 0x65, 0x43, 0x21,
-    0x02, 0x00, 0x40, 0xC0, 0x00, 0x00, 0x11, 0x44,
+    0x02, 0x00, 0x40, 0xC0, 0x00, 0x00, 0x11, 0x44, 0xA5,
   };
   ENetPacket* packet = enet_packet_create(remote.data(), remote.size(), ENET_PACKET_FLAG_UNSEQUENCED);
   check(packet && enet_peer_send(peer, 1, packet) == 0, "reference peer queues a valid pad");

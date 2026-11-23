@@ -42,6 +42,12 @@ Details and evidence for each are in `docs/MAC_FIXES.md`.
 
 ## Features
 
+- Online play works again after Slippi 3.7.0: matchmaking speaks the new websocket service
+  (wss://matchmaking.slippi.gg/v1/queue) with STUN public-address discovery, NAT type, ticket resume and 15 s
+  NAT keepalives, ported from slippi-rust-extensions; Dashdance reports version 3.7.0, reads `mmr` and `isBot`
+  from the match, and uses 3.7.0's gap-free rank thresholds. `port_mm_probe` (transport-test build) checks it
+  against the live service.
+
 - Show live ping in the performance HUD during online matches.
 - Let players opt into Slippi's red flash on failed L-cancels from the Apple dashboards, with an in-game setting saved for the next launch.
 
@@ -93,6 +99,15 @@ All in `tools/mac/`, written up for agents in the `fix-logs` skill (`desync.md`,
 - Keep Vision Pro game startup single-shot, restore its existing window in the recreated main scene, and clean up launcher timers and UIKit state on the main thread.
 
 - Correct the Vision Pro AR screen’s texture lifetime, eye/depth rendering, colors and aspect ratio; keep its touch/menu coordinates and image-quality settings consistent with the displayed picture.
+
+- Slippi 3.7.0 game-file links: archives such as `GameSetup_gui.dat` and `SlippiCSS_gui.dat` carry `slp:` symbols in place of Nintendo assets; the loader copies those assets in from the player's disc (`slippi_gamefile_links.*`, a C++ port of slippi-rust-extensions' `hsd` crate) and serves nothing, with a clear log line, when a link cannot be resolved. `tools/gamefile_links/golden.py` checks the output is byte-identical to the Rust on your own ISO.
+
+- The headless runtime links again (it lacked `gcadapter_recalibrate`).
+
+- Port Slippi 3.7.0's input suggestions and match quality (slippi-rust-extensions crates) to C++, with their unit tests.
+
+- Feed input suggestions from the GameCube adapter (game poll counts, origins, a report callback on the read thread, held back while the in-game menu has the pads) and add the "Reduce high ping effects by 16.7 ms" setting (default on) to the in-game menu and both dashboards.
+- Launch into full screen waits for the transition, logs how it went, and retries once (falling back to a window) so a half-finished transition can't leave a black window stuck between a window and full screen.
 
 ## Before opening
 

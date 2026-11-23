@@ -13,6 +13,7 @@ struct LauncherSettings {
   float overlay_scale = 1.0f;  // 0.7..1.4
   bool online = true;          // Slippi Online services
   int online_delay = 2;        // Slippi Online input delay frames (1..9): each frame adds 16.7 ms; 2 is Slippi's default
+  bool input_suggestions = true;   // Slippi 3.7.0 "Reduce high ping effects by 16.7 ms" (input suggestions); on by default as in Dolphin
   int scale = 0;               // internal resolution multiplier, 0 = auto
   int anisotropy = 16;         // 1, 4, 16
   int upscaler = 0;            // 0 off, 1 MetalFX spatial (balanced), 2 (quality)

@@ -272,6 +272,31 @@ This is an alpha. Expect rough edges, and please report them.
 3. **Draw.** The game's GX commands are decoded into draw calls and rendered by a native Metal backend (`port/runtime/gx/gx_metal.mm`) with shaders generated the way Dolphin generates them, so what you see matches the Windows build.
 4. **Connect.** `slippi_net` and `slippi_online` are wire-compatible ports of Slippi Dolphin's netplay client, matchmaking and reporting.
 
+### Full screen and Mission Control
+
+On 2026-11-21 opening Mission Control over full-screen Dashdance froze the whole Mac. WindowServer logged
+`timed out fence` until a hard reset, and Dashdance, asked to quit, hung in graphics teardown with its music still
+playing. Two guards came out of it:
+
+- **No presenting while nobody can see the window.** `window_sdl.cpp` turns SDL's occluded, hidden and minimised
+  events into `window_set_visibility_callback` (macOS only: UIKit's SDL reports minimised whenever the app resigns
+  active, with the game still on screen), and the renderer (`metal_set_window_visible`) keeps executing frames
+  but stops asking the display for drawables until the window is visible again. The log says
+  `metal: window not visible; presenting paused` and `... resumed`.
+- **Quit always finishes.** `main_mac.cpp` stops presenting and closes the audio first, saves the settings, then gives
+  each later teardown stage 10 s (75 s for sending Slippi's abandon status and queued game reports); past a stage's
+  deadline it logs `shutdown: stuck in <stage> past its deadline` and exits.
+  `MELEE_TEST_SHUTDOWN_STALL=1` simulates a renderer that never stops.
+- **Launch never stops half way into full screen.** On 2026-11-22 a launch into full screen once left a black titled
+  window beside an empty full-screen Space, and the window could not be dragged back out. `window_settle_fullscreen`
+  now waits for the transition (`SDL_SyncWindow`, up to 2.5 s), logs `window: entering full screen done after N ms`
+  or `did not finish`, and if the window is not where it was asked to be it steps back to a window and asks once
+  more; after a second failure the game stays in a window. Cmd-Q and the in-game menu's Quit row quit in any state.
+
+The log also records window events (`window: occluded`, `focus lost`, `entered full screen`) and the wall-clock time
+of every quit request, so a repeat can be lined up with `log show --predicate 'process == "WindowServer"'`. Mission
+Control itself has not been retested in full screen, deliberately: a repeat could lock the machine again.
+
 ## Build from source
 
 `./setup.sh` does all of the below. The manual steps, for people who want to see them:

@@ -2,7 +2,8 @@
 // Ship of Harkinian and friends have): open it with L+R+Start held for half a second on any
 // controller, F1 or Escape on the keyboard, or the MENU button next to the touch controls. While it
 // is open the game receives neutral inputs. Changes apply immediately and are saved for next time.
-// A Controls page configures each controller and the keyboard, with a step-by-step remap.
+// A Controls page configures each controller and the keyboard, with a step-by-step remap. Quit
+// Dashdance (pressed twice) ends the game and saves the settings.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include "host.h"
@@ -25,8 +26,9 @@ struct RuntimeSettings {
   bool hud = false;              // performance HUD
   bool fullscreen = false;       // macOS
   int online_delay = 2;          // Slippi Online input delay frames (1..9), used from the next match; each frame adds 16.7 ms
+  bool input_suggestions = true; // Slippi 3.7.0 input suggestions ("Reduce high ping effects by 16.7 ms"), from the next game
 };
-enum class MenuChange { Graphics, Volume, TouchControls, Fullscreen, Hud, Widescreen, OnlineDelay, FailedLCancelFlash };
+enum class MenuChange { Graphics, Volume, TouchControls, Fullscreen, Hud, Widescreen, OnlineDelay, InputSuggestions, FailedLCancelFlash };
 // `apply` runs on the simulation thread whenever the player changes a value.
 void menu_init(const RuntimeSettings& initial, std::function<void(const RuntimeSettings&, MenuChange)> apply);
 bool menu_is_open();

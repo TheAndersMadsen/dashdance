@@ -12,8 +12,16 @@ bool window_ui_gamecube_pad(PadState& pad);
 using ResizeCallback = std::function<void(int, int)>;
 void* window_create(int w, int h, const wchar_t* title, bool visible = true);
 void window_set_resize_callback(ResizeCallback cb);
+// Called with false when the game window stops being visible (covered, minimised, hidden, or another space or Mission
+// Control in front of a full-screen window) and with true when it is visible again. SDL frontends only.
+using VisibilityCallback = std::function<void(bool visible)>;
+void window_set_visibility_callback(VisibilityCallback cb);
 void window_pump();
 void window_set_fullscreen(bool enabled);
+// macOS: waits (a few seconds at most) for a full-screen request to finish, logs how it went, and retries once if the
+// window did not end up where it was asked to be. Used at launch, where a half-finished transition once left a black
+// window that could not be dragged out of full screen. SDL frontends only.
+void window_settle_fullscreen(bool wanted);
 // Pixels at the top of the window covered by the Dynamic Island, notch or status bar (0 on the Mac).
 float window_safe_top_pixels();
 // All four safe-area insets in pixels (island, notch, rounded corners, home indicator); zeros on the Mac.

@@ -183,7 +183,9 @@ def write_gecko_data(out, gs):
     text.append("const bool playback_code_set = %s;\n" % ("true" if gs.playback else "false"))
     text.append(cbytes("extra_gct", gs.extra_bytes or b"\0").replace("extra_gct_size = 1;", "extra_gct_size = %d;" % len(gs.extra_bytes)))
     text.append("const uint32_t extra_gct_base = 0x%08Xu;\n" % gs.extra_base)
-    for flag in gs.optional_flags:
+    # The runtime reads these flags whatever the code set; a set without the code (the playback one has no failed
+    # L-cancel flash) still defines the flag, left off, or the player does not link.
+    for flag in sorted(set(gs.optional_flags) | {"widescreen", "flash_failed_lcancel"}):
         text.append("bool option_%s = false;\n" % flag)
     for i, (addr, patched, original, flag) in enumerate(gs.optional_data):
         text.append("static const uint8_t optional_patched_%d[] = {%s};\nstatic const uint8_t optional_original_%d[] = {%s};\n" % (

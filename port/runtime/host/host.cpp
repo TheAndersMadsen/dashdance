@@ -1,6 +1,7 @@
 // Host services: memory, disc, boot, event delivery, time, MMIO, logging.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "host.h"
+#include <ctime>
 #include "memory_range.h"
 #include "platform_file.h"
 #include "sha1.h"
@@ -674,7 +675,11 @@ void retrace() {
   }
   if (options.frames && g_retraces >= options.frames) request_exit(0);
   if (g_exit) {
-    log("exit requested after %u retraces", g_retraces);
+    {   // wall-clock time, so the line can be matched against the system log
+      const std::time_t now = std::time(nullptr); char stamp[32] = "?";
+      std::strftime(stamp, sizeof stamp, "%Y-%m-%d %H:%M:%S", std::localtime(&now));
+      log("exit requested after %u retraces (%s)", g_retraces, stamp);
+    }
     std::fflush(stdout);
     throw ExitRequested{g_exit_code.load()};
   }

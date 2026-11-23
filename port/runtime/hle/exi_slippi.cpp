@@ -4,6 +4,7 @@
 #include "slippi_playback.h"
 #include "slippi_online.h"
 #include "slippi_game_file.h"
+#include "slippi_gamefile_links.h"
 #include "gecko_data.h"
 #include "discord_rpc.h"
 #include "host.h"
@@ -12,8 +13,11 @@
 #include "sha256.h"
 #include "window.h"
 #include "vcdiff.h"
+#include "slippi_input_suggestions.h"
+#include "slippi_match_quality.h"
 #include <cstdio>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <ctime>
 #include <cstdlib>
@@ -45,7 +49,7 @@ enum Cmd : uint8_t {
 // Fixed payload sizes (bytes after the command byte), from CEXISlippi::payloadSizes.
 std::unordered_map<uint8_t, uint32_t> g_payload_sizes = {
     {CMD_RECEIVE_COMMANDS, 1}, {CMD_PREPARE_REPLAY, 0xFFFF}, {CMD_READ_FRAME, 4}, {CMD_IS_STOCK_STEAL, 5}, {CMD_GET_LOCATION, 6},
-    {CMD_IS_FILE_READY, 0}, {CMD_GET_GECKO_CODES, 0}, {CMD_ONLINE_INPUTS, 25}, {CMD_CAPTURE_SAVESTATE, 32}, {CMD_LOAD_SAVESTATE, 32},
+    {CMD_IS_FILE_READY, 0}, {CMD_GET_GECKO_CODES, 0}, {CMD_ONLINE_INPUTS, 27}, {CMD_CAPTURE_SAVESTATE, 32}, {CMD_LOAD_SAVESTATE, 32},
     {CMD_GET_MATCH_STATE, 0}, {CMD_FIND_OPPONENT, 19}, {CMD_SET_MATCH_SELECTIONS, 9}, {CMD_SEND_CHAT_MESSAGE, 2}, {CMD_OPEN_LOGIN, 0},
     {CMD_LOGOUT, 0}, {CMD_UPDATE, 0}, {CMD_GET_ONLINE_STATUS, 0}, {CMD_CLEANUP_CONNECTION, 0}, {CMD_GET_NEW_SEED, 0},
     {CMD_REPORT_GAME, 368}, {CMD_FETCH_CODE_SUGGESTION, 31}, {CMD_OVERWRITE_SELECTIONS, 2 + 12},
@@ -254,6 +258,50 @@ bool read_whole_file(const std::string& path, std::vector<uint8_t>& out) {
   return ok;
 }
 
+// Slippi 3.7.0 game-file links: some shipped archives (GameSetup_gui.dat, SlippiCSS_gui.dat) carry
+// `slp:` symbols in place of Nintendo's assets, copied in here from the player's own disc. Port of
+// SlippiGameFileLoader::resolveLinks. Returns false (and empties `contents`) when a link cannot be
+// resolved: the game then gets no file, never one with dangling links.
+bool resolve_game_file_links(const std::string& name, std::vector<uint8_t>& contents, FileLoadContext context) {
+  namespace links = gamefile_links;
+  const auto started = std::chrono::steady_clock::now();
+  links::ReadDiscFile read = [&](const std::string& disc_name, std::vector<uint8_t>& bytes) {
+    uint32_t off = 0, size = 0;
+    if (preload_cancelled(context) || !host::disc_find_file(disc_name, &off, &size) || size == 0) return false;
+    bytes.resize(size);
+    if (!host::disc_read(off, bytes.data(), size)) { bytes.clear(); return false; }
+    return true;
+  };
+  links::Outcome outcome = links::resolve_links(name, contents, read);
+  if (preload_cancelled(context)) { contents.clear(); return false; }   // not cached; the game asks again
+  switch (outcome.status) {
+    case links::Status::NoLinks:
+      if (!outcome.error.empty()) host::log("slippi: %s %s", name.c_str(), outcome.error.c_str());
+      return true;
+    case links::Status::Failed:
+      contents.clear();
+      host::log("slippi: could not resolve links in %s: %s", name.c_str(), outcome.error.c_str());
+      host::log("slippi: serving nothing for %s. Dashdance could not load %s, so the game cannot continue. This is "
+                "most likely caused by your disc image: a game file Slippi needs from it is missing or modified. "
+                "Try an unmodified NTSC 1.02 image.", name.c_str(), name.c_str());
+#if !(defined(MELEE_PORT_OFFLINE) && MELEE_PORT_OFFLINE)   // the headless runtime has no notifications
+      host::notify_local("Failed to load game file",
+                         "Dashdance could not load " + name + " from your disc image, which may be modified. "
+                         "Try an unmodified NTSC 1.02 image.");
+#endif
+      return false;
+    case links::Status::Resolved:
+      break;
+  }
+  for (const auto& warning : outcome.warnings) host::log("slippi: %s: %s", name.c_str(), warning.c_str());
+  std::string files;
+  for (const auto& f : outcome.disc_files) files += (files.empty() ? "" : ", ") + f;
+  const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+  host::log("slippi: resolved %zu link(s) in %s from %s in %.1f ms (%zu bytes)", outcome.links, name.c_str(),
+            files.c_str(), ms, contents.size());
+  return true;
+}
+
 // Reads and patches one file. Runs without the cache lock held: the preload worker must never
 // make the simulation thread wait behind a multi-megabyte read plus VCDIFF.
 std::vector<uint8_t> build_game_file(const std::string& name, FileLoadContext context) {
@@ -264,11 +312,13 @@ std::vector<uint8_t> build_game_file(const std::string& name, FileLoadContext co
   if (name != "MxDt.dat" && direct && read_whole_file(direct->string(), blob)) {
     out = std::move(blob);
     host::log("slippi: served %s (%zu bytes)", name.c_str(), out.size());
-    return out;
-  }
-  if (preload_cancelled(context)) return out;
-  const auto diff = g_game_file_root->file(name, true);
-  if (diff && read_whole_file(diff->string(), blob)) {
+  } else {
+    if (preload_cancelled(context)) return out;
+    const auto diff = g_game_file_root->file(name, true);
+    if (!diff || !read_whole_file(diff->string(), blob)) {
+      host::log("slippi: game file %s not found in %s", name.c_str(), host::options.sys_dir.c_str());
+      return out;
+    }
     if (preload_cancelled(context)) return out;
     uint32_t off = 0, size = 0;
     std::vector<uint8_t> source;
@@ -281,12 +331,12 @@ std::vector<uint8_t> build_game_file(const std::string& name, FileLoadContext co
     if (source.empty() || !host::vcdiff_decode(source.data(), source.size(), blob.data(), blob.size(), out, &err)) {
       host::log("slippi: cannot apply %s.diff (%s)", name.c_str(), source.empty() ? "file not on disc" : err.c_str());
       out.clear();
-    } else {
-      host::log("slippi: served %s (%zu bytes from ISO + %zu byte diff)", name.c_str(), out.size(), blob.size());
+      return out;
     }
-    return out;
+    host::log("slippi: served %s (%zu bytes from ISO + %zu byte diff)", name.c_str(), out.size(), blob.size());
   }
-  host::log("slippi: game file %s not found in %s", name.c_str(), host::options.sys_dir.c_str());
+  // Pull in any assets the file links to on the disc.
+  if (!out.empty()) resolve_game_file_links(name, out, context);
   return out;
 }
 
@@ -451,7 +501,8 @@ void dma_write(uint32_t addr, uint32_t size) {
       case CMD_STOP_MUSIC: jukebox::stop(); break;
       case CMD_CHANGE_MUSIC_VOLUME: jukebox::set_melee_volume(mem[loc + 1]); break;
       case CMD_RECEIVE_COMMANDS: break;   // handled above
-      case CMD_RECEIVE_GAME_END: write_to_file(&mem[loc], payload + 1, "close"); slippi::playback::note_game_end(); break;
+      case CMD_RECEIVE_GAME_END: write_to_file(&mem[loc], payload + 1, "close"); slippi::playback::note_game_end();
+        slippi::input_suggestions::end_game(); slippi::match_quality::end_game(); break;
       case CMD_FRAME_BOOKEND: write_to_file(&mem[loc], payload + 1, ""); break;
       case CMD_PREPARE_REPLAY: case CMD_READ_FRAME: case CMD_IS_STOCK_STEAL:
       case CMD_IS_FILE_READY: case CMD_GET_GECKO_CODES: {

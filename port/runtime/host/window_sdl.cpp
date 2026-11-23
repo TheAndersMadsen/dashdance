@@ -50,6 +50,8 @@ enum : uint16_t {
 SDL_Window* g_window = nullptr;
 SDL_MetalView g_view = nullptr;
 ResizeCallback g_resize;
+VisibilityCallback g_visibility;
+bool g_occluded = false, g_hidden = false, g_minimized = false, g_reported_visible = true;
 MessageCallback g_message;
 std::atomic<bool> g_closed{false};
 std::atomic<bool> g_fullscreen_toggle{false};
@@ -689,6 +691,7 @@ void window_set_message_callback(MessageCallback cb) { g_message = std::move(cb)
 void window_input_capture(bool capture) { g_capture.store(capture); }
 bool window_ui_gamecube_pad(PadState& pad) { std::lock_guard<std::mutex> lock(g_ui_mutex); pad = g_ui_pad; return g_ui_gamecube; }
 void window_set_resize_callback(ResizeCallback cb) { g_resize = std::move(cb); }
+void window_set_visibility_callback(VisibilityCallback cb) { g_visibility = std::move(cb); }
 
 void window_pump() {
   if (!g_window) return;
@@ -696,13 +699,27 @@ void window_pump() {
   bool resized = false;
   while (SDL_PollEvent(&event)) {
     switch (event.type) {
-      case SDL_EVENT_QUIT: case SDL_EVENT_WINDOW_CLOSE_REQUESTED: g_closed.store(true); request_exit(0); break;
+      case SDL_EVENT_QUIT: case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+        log("window: %s", event.type == SDL_EVENT_QUIT ? "quit requested by the system" : "window closed");
+        g_closed.store(true); request_exit(0); break;
       case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: case SDL_EVENT_WINDOW_RESIZED: resized = true; break;
+      // Whether anyone can see the window. While nobody can (Mission Control or another space in front of a full-screen
+      // game, a minimised or covered window) the renderer stops asking the display for drawables.
+      case SDL_EVENT_WINDOW_OCCLUDED: g_occluded = true; log("window: occluded"); break;
+      case SDL_EVENT_WINDOW_EXPOSED: if (g_occluded) log("window: exposed"); g_occluded = false; break;
+      case SDL_EVENT_WINDOW_HIDDEN: g_hidden = true; log("window: hidden"); break;
+      case SDL_EVENT_WINDOW_SHOWN: if (g_hidden) log("window: shown"); g_hidden = false; break;
+      case SDL_EVENT_WINDOW_MINIMIZED: g_minimized = true; log("window: minimised"); break;
+      case SDL_EVENT_WINDOW_RESTORED: if (g_minimized) log("window: restored"); g_minimized = false; break;
+      case SDL_EVENT_WINDOW_FOCUS_LOST: log("window: focus lost"); break;
+      case SDL_EVENT_WINDOW_FOCUS_GAINED: log("window: focus gained"); break;
+      case SDL_EVENT_WINDOW_ENTER_FULLSCREEN: log("window: entered full screen"); break;
+      case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN: log("window: left full screen"); break;
       case SDL_EVENT_GAMEPAD_ADDED: open_gamepad(event.gdevice.which); break;
       case SDL_EVENT_GAMEPAD_REMOVED: close_gamepad(event.gdevice.which); break;
       case SDL_EVENT_KEY_DOWN:
         if (event.key.key == SDLK_RETURN && (event.key.mod & SDL_KMOD_ALT) && !event.key.repeat) g_fullscreen_toggle.store(true);
-        if (event.key.key == SDLK_Q && (event.key.mod & SDL_KMOD_GUI) && !event.key.repeat) { g_closed.store(true); request_exit(0); }   // Cmd+Q in full screen
+        if (event.key.key == SDLK_Q && (event.key.mod & SDL_KMOD_GUI) && !event.key.repeat) { log("window: Cmd-Q"); g_closed.store(true); request_exit(0); }   // Cmd+Q in full screen
         if (!event.key.repeat) g_last_key_press.store((int)event.key.scancode);
         if ((event.key.key == SDLK_F1 || event.key.key == SDLK_ESCAPE) && !event.key.repeat && !menu_capturing()) menu_toggle();
         break;
@@ -711,6 +728,11 @@ void window_pump() {
         break;
       default: break;
     }
+  }
+  const bool visible = !g_occluded && !g_hidden && !g_minimized;
+  if (visible != g_reported_visible) {
+    g_reported_visible = visible;
+    if (g_visibility) g_visibility(visible);
   }
   if (resized) {
     refresh_client_size();
@@ -748,6 +770,33 @@ bool window_division_region(float out[4]) {
   return true;
 }
 void window_set_fullscreen(bool enabled) { if (g_window) SDL_SetWindowFullscreen(g_window, enabled); }
+void window_settle_fullscreen(bool wanted) {
+#if defined(__APPLE__) && TARGET_OS_OSX
+  if (!g_window) return;
+  // The Space transition is asynchronous. SDL_SyncWindow pumps events until it finishes (SDL gives up after 2.5 s);
+  // the events stay queued for window_pump.
+  auto settle = [wanted](const char* what) {
+    const Uint64 t0 = SDL_GetTicks();
+    const bool finished = SDL_SyncWindow(g_window);
+    const bool full = (SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN) != 0;
+    log("window: %s %s after %llu ms (%s)", what, full == wanted && finished ? "done" : "did not finish",
+        (unsigned long long)(SDL_GetTicks() - t0), full ? "full screen" : "windowed");
+    return finished && full == wanted;
+  };
+  if (settle(wanted ? "entering full screen" : "leaving full screen")) return;
+  // Half way between the two: step back to a window, then ask again.
+  SDL_SetWindowFullscreen(g_window, false);
+  settle("retry: back to a window");
+  if (!wanted) return;
+  SDL_SetWindowFullscreen(g_window, true);
+  if (!settle("retry: entering full screen")) {
+    SDL_SetWindowFullscreen(g_window, false);
+    settle("full screen failed twice; staying in a window");
+  }
+#else
+  (void)wanted;
+#endif
+}
 
 // ---- launcher services: controllers without a window
 void window_input_init() {
@@ -909,7 +958,15 @@ void input_poll(PadState out[4]) {
       if (g_capture.load()) { pads[0] = {}; pads[0].err = 0; }
     }
   } ui{out};
-  struct MenuPass { PadState* pads; ~MenuPass() { menu_frame(pads); } } menu_pass{out};   // after every input source, before the UI snapshot
+  struct MenuPass {
+    PadState* pads;
+    ~MenuPass() {
+      menu_frame(pads);
+      // While the menu (or a UI capture) has the pads, what the game reads is not what the adapter reports, so input
+      // suggestions built from those reports would be wrong: hold them back.
+      if (g_game_pad_poll) gcadapter_set_game_input_replaced(menu_is_open() || g_capture.load());
+    }
+  } menu_pass{out};   // after every input source, before the UI snapshot
   for (int i = 0; i < 4; ++i) { out[i] = {}; out[i].err = -1; }
   if (pad_file(out)) return;
   if (g_scripted) {

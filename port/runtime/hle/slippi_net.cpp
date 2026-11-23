@@ -9,6 +9,7 @@
 #if !defined(MELEE_PORT_OFFLINE) || !MELEE_PORT_OFFLINE
 #include "host.h"
 #include "slippi_net_diag.h"
+#include "slippi_input_suggestions.h"
 #if defined(_WIN32)
 #define NOMINMAX
 #include <winsock2.h>
@@ -19,7 +20,13 @@
 #include <enet/enet.h>
 #include <nlohmann/json.hpp>
 #include "json_safe.h"
+#include "slippi_matchmaking_protocol.h"
+#include "slippi_ws_apple.h"
 #include <algorithm>
+#include <atomic>
+#include <cstdlib>
+#include <memory>
+#include <mutex>
 #include <chrono>
 #include <climits>
 #include <cstdio>
@@ -47,7 +54,7 @@ void prioritize_socket(ENetSocket socket) {
 }  // namespace
 namespace slippi {
 
-const char* const SLIPPI_SEMVER = "3.6.4";
+const char* const SLIPPI_SEMVER = "3.7.0";
 
 uint64_t time_us() { return (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 uint64_t time_ms() { return time_us() / 1000; }
@@ -176,6 +183,18 @@ void DirectCodes::AddOrUpdateCode(const std::string& code) {
 }
 
 // ---------------------------------------------------------------- netplay client
+// The adapter read thread sends input suggestions through the live client. The pointer is set and cleared under this
+// mutex so the adapter thread never uses a client that has started tearing down (SlippiNetplay.cpp, Slippi 3.7.0).
+static std::mutex s_suggestion_sink_mutex;
+static NetplayClient* s_suggestion_sink = nullptr;
+
+void NetplayClient::SendInputSuggestionForAdapterReport(const uint64_t game_poll_counts[4], const uint8_t* payload, size_t payload_len) {
+  std::lock_guard<std::mutex> lk(s_suggestion_sink_mutex);
+  if (!s_suggestion_sink) return;
+  input_suggestions::Suggestion suggestion = input_suggestions::on_adapter_report(game_poll_counts, payload, payload_len);
+  if (suggestion.is_valid) s_suggestion_sink->SendSlippiPadSuggestion(suggestion.target_frame, suggestion.seq, suggestion.pad);
+}
+
 NetplayClient::NetplayClient(std::vector<std::string> addrs, std::vector<uint16_t> ports, uint8_t remote_player_count, uint16_t local_port,
                              bool is_decider, uint8_t player_idx, const std::string& bind_address) {
   host::log("slippi: netplay client: local port %u, decider %d, player index %u, %u remote players", local_port, is_decider, player_idx, remote_player_count);
@@ -237,9 +256,15 @@ NetplayClient::NetplayClient(std::vector<std::string> addrs, std::vector<uint16_
   }
   status_.store(ConnectStatus::INITIATED, std::memory_order_release);
   thread_ = std::thread(&NetplayClient::ThreadFunc, this);
+  std::lock_guard<std::mutex> lk(s_suggestion_sink_mutex);
+  s_suggestion_sink = this;
 }
 
 NetplayClient::~NetplayClient() {
+  {
+    std::lock_guard<std::mutex> lk(s_suggestion_sink_mutex);
+    if (s_suggestion_sink == this) s_suggestion_sink = nullptr;
+  }
   do_loop_.store(false);
   if (client_) wakeup_thread(client_);
   if (thread_.joinable()) thread_.join();
@@ -258,6 +283,8 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
       if (!(packet >> frame) || !(packet >> packet_player_port) || !(packet >> checksum_frame) || !(packet >> checksum)) { host::log("slippi: pad packet too small"); break; }
       uint8_t pidx = PlayerIdxFromPort(packet_player_port);
       if (pidx >= remote_player_count_) { host::log("slippi: pad packet with invalid player idx %u", pidx); break; }
+      // We have told the other players which inputs we have for this player, so that can't change anymore.
+      if (!player_active_[packet_player_port].load(std::memory_order_acquire)) break;
       const int pad_data_offset = 14;
       int conn_idx = 0;
       for (int i = 0; i < (int)server_.size(); ++i)
@@ -276,7 +303,7 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
       }
       FrameTiming timing = last_frame_timing_[pidx];
       if (!has_game_started_) { timing.frame = 0; timing.time_us = cur_time; }
-      int64_t opponent_send_time_us = (int64_t)cur_time - (int64_t)(ping_us_[pidx] / 2);
+      int64_t opponent_send_time_us = (int64_t)cur_time - (int64_t)(ping_us_[pidx].load(std::memory_order_relaxed) / 2);
       int64_t frame_diff_offset_us = 16683 * (int64_t)(timing.frame - frame);
       int64_t time_offset_us = opponent_send_time_us - (int64_t)timing.time_us + frame_diff_offset_us;
       auto& fod = frame_offset_data_[pidx];
@@ -289,12 +316,15 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
         const uint8_t* data = packet.data();
         int32_t head_frame = remote_pad_queue_[pidx].empty() ? 0 : remote_pad_queue_[pidx].front()->frame;
         inputs_to_copy = (int64_t)frame - head_frame;
-        if (pad_data_offset + inputs_to_copy * PAD_DATA_SIZE > (int64_t)packet.size()) { host::log("slippi: pad packet too small for %lld inputs", (long long)inputs_to_copy); break; }
+        if (pad_data_offset + inputs_to_copy * PAD_WIRE_SIZE > (int64_t)packet.size()) { host::log("slippi: pad packet too small for %lld inputs", (long long)inputs_to_copy); break; }
         if (inputs_to_copy > 128) { host::log("slippi: pad packet with too many frames (%lld)", (long long)inputs_to_copy); break; }
         for (int64_t i = inputs_to_copy - 1; i >= 0; --i)
-          remote_pad_queue_[pidx].push_front(std::make_unique<Pad>((int32_t)(frame - i), &data[pad_data_offset + i * PAD_DATA_SIZE]));
+          AddRemotePad(pidx, (int32_t)(frame - i), &data[pad_data_offset + i * PAD_WIRE_SIZE]);
         remote_checksums_[pidx] = {checksum_frame, checksum};
       }
+      // Let input suggestions check their predictions against the real inputs.
+      for (int64_t i = inputs_to_copy - 1; i >= 0; --i)
+        input_suggestions::on_remote_input(pidx, (int32_t)(frame - i), packet.data() + pad_data_offset + i * PAD_WIRE_SIZE);
       if (inputs_to_copy > 0) {
         Packet ack;
         ack << (uint8_t)NP_MSG_SLIPPI_PAD_ACK << frame << player_idx_;
@@ -316,12 +346,11 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
       if (timers.empty() || timers.front().frame != frame) break;
       uint64_t send_time = timers.front().time_us;
       timers.pop_front();
-      ping_us_[pidx] = time_us() - send_time;
-      net_diag::on_ack(ping_us_[pidx]);
-      ping_sample_sum_us_.fetch_add(ping_us_[pidx], std::memory_order_relaxed);
-      ping_sample_count_.fetch_add(1, std::memory_order_relaxed);
-      if (pidx == 0) host::set_online_ping_ms((int)(ping_us_[0] / 1000));
-      if (frame % 600 == 0 && pidx == 0) host::log("slippi: ping %llu ms", (unsigned long long)(ping_us_[0] / 1000));
+      const uint64_t ping = time_us() - send_time;
+      ping_us_[pidx].store(ping, std::memory_order_relaxed);
+      net_diag::on_ack(ping);
+      if (pidx == 0) host::set_online_ping_ms((int)(ping / 1000));
+      if (frame % 600 == 0 && pidx == 0) host::log("slippi: ping %llu ms", (unsigned long long)(ping / 1000));
       break;
     }
     case NP_MSG_SLIPPI_MATCH_SELECTIONS: {
@@ -332,19 +361,70 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
         host::log("slippi: received selections from player %u (char %u color %u stage %u)", s->player_idx, s->character_id, s->character_color, s->stage_id);
         match_info_.remote[idx].Merge(*s);
         has_game_started_ = false;
-        remote_pad_queue_[idx].clear();
+        {
+          std::lock_guard<std::mutex> lk(pad_mutex_);
+          remote_pad_queue_[idx].clear();
+          remote_pad_history_[idx].clear();
+        }
+        input_suggestions::reset_remote(idx);
       }
+      break;
+    }
+    case NP_MSG_SLIPPI_PAD_SUGGESTION: {
+      uint8_t packet_player_port; int32_t target_frame; uint32_t seq;
+      if (!(packet >> packet_player_port) || !(packet >> target_frame) || !(packet >> seq)) { host::log("slippi: input suggestion packet too small"); break; }
+      const size_t pad_data_offset = 10;   // message id, port, target frame and seq come before the pad
+      if (packet.size() < pad_data_offset + PAD_INPUT_SIZE) { host::log("slippi: input suggestion packet too small to read pad"); break; }
+      uint8_t pidx = PlayerIdxFromPort(packet_player_port);
+      if (pidx >= remote_player_count_) { host::log("slippi: input suggestion with invalid player idx %u", pidx); break; }
+      input_suggestions::on_remote_suggestion(pidx, target_frame, seq, packet.data() + pad_data_offset);
+      break;
+    }
+    case NP_MSG_SLIPPI_PLAYER_DROP: {
+      uint8_t sender_port, dropped_port, input_count; int32_t last_frame;
+      if (!(packet >> sender_port) || !(packet >> dropped_port) || !(packet >> last_frame) || !(packet >> input_count)) { host::log("slippi: player drop packet too small"); break; }
+      const size_t inputs_offset = 8;   // message id, ports, last frame and input count come before the inputs
+      if (packet.size() < inputs_offset + (size_t)input_count * PAD_WIRE_SIZE) { host::log("slippi: player drop packet too small to read inputs"); break; }
+      if (sender_port == player_idx_ || sender_port == dropped_port || last_frame < 0 || sender_port >= PLAYER_COUNT_MAX ||
+          dropped_port >= PLAYER_COUNT_MAX || PlayerIdxFromPort(sender_port) >= remote_player_count_ ||
+          PlayerIdxFromPort(dropped_port) >= remote_player_count_) {
+        host::log("slippi: invalid player drop packet (sender %u, dropped %u, last frame %d)", sender_port, dropped_port, last_frame);
+        break;
+      }
+      // The other players take care of removing us if this is about us. A player we already lost has no say, or else two
+      // players that lost their connection to each other would take each other out.
+      if (dropped_port == player_idx_ || !player_active_[sender_port].load(std::memory_order_acquire)) break;
+      // Losing a player to anyone means losing them to everyone, even if we are still connected to them. This also
+      // reports what we have for them to the other players.
+      ForceDisconnectPlayer(dropped_port);
+      ProcessPlayerDrops();
+      const int32_t despawn = despawn_frames_[dropped_port].load(std::memory_order_acquire);
+      if (despawn != 0) {
+        if (last_frame + DROP_DESPAWN_FRAMES > despawn)
+          host::log("slippi: report about player %u came too late (last frame %d, despawn frame %d)", dropped_port, last_frame, despawn);
+        break;
+      }
+      AddPlayerDropReportInputs(PlayerIdxFromPort(dropped_port), last_frame, input_count, packet.data() + inputs_offset);
       break;
     }
     case NP_MSG_SLIPPI_CHAT_MESSAGE: {
       auto s = ReadChatMessage(packet);
-      if (!s->error) remote_chat_message_selection_ = std::move(s);
+      if (!s->error) {
+        std::lock_guard<std::mutex> lk(chat_mutex_);   // the CPU thread takes it in GetSlippiRemoteChatMessage
+        remote_chat_message_.message_id = s->message_id;
+        remote_chat_message_.player_idx = s->player_idx;
+      }
       break;
     }
     case NP_MSG_SLIPPI_CONN_SELECTED: break;
     case NP_MSG_SLIPPI_COMPLETE_STEP: {
       GamePrepStepResults r;
-      packet >> r.step_idx >> r.char_selection >> r.char_color_selection >> r.stage_selections[0] >> r.stage_selections[1];
+      if (!(packet >> r.step_idx) || !(packet >> r.char_selection) || !(packet >> r.char_color_selection) ||
+          !(packet >> r.stage_selections[0]) || !(packet >> r.stage_selections[1])) { host::log("slippi: complete step packet too small"); break; }
+      // The opponent sends one per game prep step and the game takes them off as it asks, so only a few ever wait. The
+      // cap keeps a peer flooding step packets from growing the queue forever.
+      std::lock_guard<std::mutex> lk(game_prep_mutex_);
+      if (game_prep_step_queue_.size() >= 32) { host::log("slippi: game prep step queue is full, dropping the oldest step"); game_prep_step_queue_.pop_front(); }
       game_prep_step_queue_.push_back(r);
       break;
     }
@@ -376,6 +456,10 @@ std::unique_ptr<PlayerSelections> NetplayClient::ReadSelections(Packet& p) {
 std::unique_ptr<PlayerSelections> NetplayClient::ReadChatMessage(Packet& p) {
   auto s = std::make_unique<PlayerSelections>();
   if (!(p >> s->message_id) || !(p >> s->player_idx)) { s->error = true; return s; }
+  // The game uses this port as is to show who sent the message, so it has to be one of the remote players.
+  if (s->player_idx == player_idx_ || s->player_idx >= PLAYER_COUNT_MAX || PlayerIdxFromPort(s->player_idx) >= remote_player_count_) {
+    host::log("slippi: chat message with invalid player port %u", s->player_idx); s->error = true; return s;
+  }
   static const int allowed[] = {136, 129, 130, 132, 34, 40, 33, 36, 72, 66, 68, 65, 24, 18, 20, 17, CHAT_MSG_CHAT_DISABLED};
   bool ok = false;
   for (int a : allowed) if (a == s->message_id) ok = true;
@@ -393,10 +477,18 @@ void NetplayClient::Send(Packet& packet) {
     uint8_t mid = packet.data()[0];
     enet_uint32 flags = ENET_PACKET_FLAG_RELIABLE;
     uint8_t channel = 0;
-    if (mid == NP_MSG_SLIPPI_PAD || mid == NP_MSG_SLIPPI_PAD_ACK) { flags = ENET_PACKET_FLAG_UNSEQUENCED; channel = 1; }
+    if (mid == NP_MSG_SLIPPI_PAD || mid == NP_MSG_SLIPPI_PAD_ACK || mid == NP_MSG_SLIPPI_PAD_SUGGESTION) { flags = ENET_PACKET_FLAG_UNSEQUENCED; channel = 1; }
     ENetPacket* epac = enet_packet_create(packet.data(), packet.size(), flags);
     enet_peer_send(server_[i], channel, epac);
   }
+}
+
+// By default ENet deliberately drops unreliable packets while round trip time is rising, and pads and acks are all
+// unreliable: those drops turn a latency increase into gaps in the opponent's inputs, which stalls. Our traffic is far
+// too small for backing off to relieve congestion. A deceleration of 0 keeps the throttle at full, and ENet sends the
+// setting to the peer too, so it stops throttling what it sends us (Slippi 3.7.0).
+static void disable_packet_throttle_drops(ENetPeer* peer) {
+  enet_peer_throttle_configure(peer, ENET_PEER_PACKET_THROTTLE_INTERVAL, ENET_PEER_PACKET_THROTTLE_ACCELERATION, 0);
 }
 
 void NetplayClient::Disconnect() {
@@ -451,6 +543,7 @@ void NetplayClient::ThreadFunc() {
         case ENET_EVENT_TYPE_CONNECT: {
           if (!ev.peer) break;
           log_peer("connected", client_, ev.peer, false, ev.data);
+          disable_packet_throttle_drops(ev.peer);
           int early_idx = 0;
           for (int i = 0; i < (int)remote_addrs.size(); ++i)
             if (remote_addrs[i].host == ev.peer->address.host && remote_addrs[i].port == ev.peer->address.port) { early_idx = i; break; }
@@ -493,6 +586,7 @@ void NetplayClient::ThreadFunc() {
 
   while (do_loop_.load()) {
     if (status_.load(std::memory_order_acquire) == ConnectStatus::DISCONNECTED) break;
+    const bool waiting_on_player_drop = ProcessPlayerDrops();
     for (auto& conn : active_connections_) {
       for (auto& peer : conn.second) {
         if (peer.second.is_disconnected || player_active_[peer.second.player_idx].load(std::memory_order_acquire)) continue;
@@ -502,7 +596,8 @@ void NetplayClient::ThreadFunc() {
     }
     ENetEvent ev;
     const uint64_t service_t0 = time_us();
-    int net = enet_host_service(client_, &ev, 250);
+    // The players can all be halted waiting on a dropped player, in which case no packets arrive to wake us up.
+    int net = enet_host_service(client_, &ev, waiting_on_player_drop ? 10 : 250);
     net_diag::on_service(time_us() - service_t0);
     for (;;) {
       std::unique_ptr<Packet> p;
@@ -552,11 +647,12 @@ void NetplayClient::ThreadFunc() {
               if (other.second.player_idx == player && !other.second.is_disconnected && other.first->state == ENET_PEER_STATE_CONNECTED) all_peers_gone = false;
           if (!all_peers_gone) host::log("slippi: a connection attempt to %x:%u expired; the player is still connected on another address", ev.peer->address.host, ev.peer->address.port);
         }
-        if (all_peers_gone && active_connections_.count(key) && active_connections_[key].count(ev.peer))
-          player_active_[active_connections_[key][ev.peer].player_idx].store(false, std::memory_order_release);
         bool connected_client = false;
         for (size_t i = 0; i < server_.size(); ++i)
           if (ev.peer->address.host == server_[i]->address.host && ev.peer->address.port == server_[i]->address.port) connected_client = true;
+        // Only a port we are actually connected to counts: losing a player makes everyone else drop them too (3.7.0).
+        if (connected_client && all_peers_gone && active_connections_.count(key) && active_connections_[key].count(ev.peer))
+          player_active_[active_connections_[key][ev.peer].player_idx].store(false, std::memory_order_release);
         if (connected_client && ev.data != 0) disconnect_reason_.store(ev.data, std::memory_order_release);
         host::log("slippi: disconnect from %x:%u (all peers gone: %d, connected client: %d)", ev.peer->address.host, ev.peer->address.port, all_peers_gone, connected_client);
         if (connected_client && all_peers_gone && AreAllConnectionsDisconnected()) do_loop_.store(false);
@@ -564,11 +660,19 @@ void NetplayClient::ThreadFunc() {
       }
       case ENET_EVENT_TYPE_CONNECT: {
         log_peer("connected late", client_, ev.peer, false, ev.data);
+        disable_packet_throttle_drops(ev.peer);
         int late_idx = 0;
         for (int i = 0; i < (int)server_.size(); ++i)
           if (server_[i]->address.host == ev.peer->address.host && server_[i]->address.port == ev.peer->address.port) { late_idx = i; break; }
         ActiveConnectionInfo info;
         info.player_idx = match_info_.remote[late_idx].player_idx;
+        // A dropped player stays dropped: the other players have already moved on without them.
+        if (player_drop_times_ms_[info.player_idx] != 0) {
+          info.is_disconnected = true;
+          active_connections_[peer_key(ev.peer)][ev.peer] = info;
+          enet_peer_disconnect(ev.peer, 0);
+          break;
+        }
         active_connections_[peer_key(ev.peer)][ev.peer] = info;
         player_active_[info.player_idx].store(true, std::memory_order_release);
         break;
@@ -588,7 +692,7 @@ void NetplayClient::StartSlippiGame() {
     ack_timers_[i].clear();
   }
   is_desync_recovery_ = false;
-  game_prep_step_queue_.clear();
+  { std::lock_guard<std::mutex> lk(game_prep_mutex_); game_prep_step_queue_.clear(); }
   match_info_.Reset();
 }
 
@@ -610,7 +714,7 @@ void NetplayClient::SendSlippiPad(std::unique_ptr<Pad> pad) {
   int32_t frame = local_pad_queue_.front()->frame;
   auto spac = std::make_unique<Packet>();
   *spac << (uint8_t)NP_MSG_SLIPPI_PAD << frame << player_idx_ << local_pad_queue_.front()->checksum_frame << local_pad_queue_.front()->checksum;
-  for (auto& p : local_pad_queue_) spac->append(p->buf, PAD_DATA_SIZE);
+  for (auto& p : local_pad_queue_) spac->append(p->buf, PAD_WIRE_SIZE);   // the inputs and the RNG bits
   SendAsync(std::move(spac));
   uint64_t t = time_us();
   has_game_started_ = true;
@@ -619,6 +723,15 @@ void NetplayClient::SendSlippiPad(std::unique_ptr<Pad> pad) {
     std::lock_guard<std::mutex> lk(ack_mutex_);
     ack_timers_[i].push_back({frame, t});
   }
+}
+
+// Sends the newest local input between frames so opponents can predict with it. Called from the CPU thread and the
+// adapter read thread.
+void NetplayClient::SendSlippiPadSuggestion(int32_t target_frame, uint32_t seq, const uint8_t* pad) {
+  auto spac = std::make_unique<Packet>();
+  *spac << (uint8_t)NP_MSG_SLIPPI_PAD_SUGGESTION << player_idx_ << target_frame << seq;
+  spac->append(pad, PAD_INPUT_SIZE);
+  SendAsync(std::move(spac));
 }
 
 void NetplayClient::SetMatchSelections(PlayerSelections& s) {
@@ -642,6 +755,7 @@ void NetplayClient::SendSyncedGameState(const SyncedGameState& s) {
   SendAsync(std::move(spac));
 }
 bool NetplayClient::GetGamePrepResults(uint8_t step_idx, GamePrepStepResults& res) {
+  std::lock_guard<std::mutex> lk(game_prep_mutex_);
   while (!game_prep_step_queue_.empty()) {
     if (game_prep_step_queue_.front().step_idx == step_idx) { res = game_prep_step_queue_.front(); return true; }
     game_prep_step_queue_.pop_front();
@@ -656,21 +770,23 @@ void NetplayClient::SendChatMessage(int message_id) {
 }
 PlayerSelections NetplayClient::GetSlippiRemoteChatMessage(bool chat_enabled) {
   PlayerSelections copied;
-  if (remote_chat_message_selection_ && chat_enabled) {
-    copied.message_id = remote_chat_message_selection_->message_id;
-    copied.player_idx = remote_chat_message_selection_->player_idx;
-    remote_chat_message_selection_->message_id = 0;
-    remote_chat_message_selection_->player_idx = 0;
-  } else {
-    copied.message_id = 0; copied.player_idx = 0;
-    if (remote_chat_message_selection_ && !chat_enabled && remote_chat_message_selection_->message_id > 0 &&
-        remote_chat_message_selection_->message_id != CHAT_MSG_CHAT_DISABLED) {
-      auto spac = std::make_unique<Packet>();
-      *spac << (uint8_t)NP_MSG_SLIPPI_CHAT_MESSAGE << (int)CHAT_MSG_CHAT_DISABLED << player_idx_;
-      SendAsync(std::move(spac));
-      remote_sent_chat_message_id = 0;
-      remote_chat_message_selection_ = nullptr;
+  copied.message_id = 0; copied.player_idx = 0;
+  bool reply_chat_disabled = false;
+  {
+    std::lock_guard<std::mutex> lk(chat_mutex_);
+    if (chat_enabled) {
+      copied.message_id = remote_chat_message_.message_id;
+      copied.player_idx = remote_chat_message_.player_idx;
+    } else if (remote_chat_message_.message_id > 0 && remote_chat_message_.message_id != CHAT_MSG_CHAT_DISABLED) {
+      reply_chat_disabled = true;
     }
+    if (chat_enabled || reply_chat_disabled) { remote_chat_message_.message_id = 0; remote_chat_message_.player_idx = 0; }
+  }
+  if (reply_chat_disabled) {   // chat is off here: tell the sender so
+    auto spac = std::make_unique<Packet>();
+    *spac << (uint8_t)NP_MSG_SLIPPI_CHAT_MESSAGE << (int)CHAT_MSG_CHAT_DISABLED << player_idx_;
+    SendAsync(std::move(spac));
+    remote_sent_chat_message_id = 0;
   }
   return copied;
 }
@@ -684,6 +800,9 @@ uint8_t NetplayClient::GetSlippiRemoteSentChatMessage(bool chat_enabled) {
 std::unique_ptr<RemotePadOutput> NetplayClient::GetSlippiRemotePad(int index, int max_frame_count) {
   std::lock_guard<std::mutex> lk(pad_mutex_);
   auto out = std::make_unique<RemotePadOutput>();
+  out->player_idx = (uint8_t)(index >= player_idx_ ? index + 1 : index);
+  out->is_disconnected = !player_active_[out->player_idx].load(std::memory_order_acquire);
+  out->despawn_frame = despawn_frames_[out->player_idx].load(std::memory_order_acquire);
   if (remote_pad_queue_[index].empty()) {
     Pad empty(0);
     out->latest_frame = 0;
@@ -693,8 +812,6 @@ std::unique_ptr<RemotePadOutput> NetplayClient::GetSlippiRemotePad(int index, in
   out->latest_frame = 0;
   out->checksum_frame = remote_checksums_[index].frame;
   out->checksum = remote_checksums_[index].value;
-  out->player_idx = (uint8_t)(index >= player_idx_ ? index + 1 : index);
-  out->is_disconnected = !player_active_[out->player_idx].load(std::memory_order_acquire);
   int count = 0;
   for (auto it = remote_pad_queue_[index].rbegin(); it != remote_pad_queue_[index].rend(); ++it) {
     out->latest_frame = std::max(out->latest_frame, (*it)->frame);
@@ -728,6 +845,9 @@ void NetplayClient::ForceDisconnectPlayer(uint8_t player_idx) {
 void NetplayClient::ForceDisconnect(DisconnectReason reason) {
   pending_disconnect_reason_.store((uint32_t)reason, std::memory_order_release);
   disconnect_reason_.store((uint32_t)reason, std::memory_order_release);
+  // Before marking the players gone: we are the one leaving, so the network thread must not take it for those players
+  // dropping and report them to the others (see ProcessPlayerDrops).
+  status_.store(ConnectStatus::DISCONNECTED, std::memory_order_release);
   for (uint8_t i = 0; i < remote_player_count_; ++i) ForceDisconnectPlayer(match_info_.remote[i].player_idx);
 }
 bool NetplayClient::AreAllPeersDisconnectedForKey(const std::string& key) {
@@ -739,10 +859,82 @@ bool NetplayClient::AreAllConnectionsDisconnected() {
   for (auto& c : active_connections_) for (auto& p : c.second) if (!p.second.is_disconnected) return false;
   return true;
 }
-double NetplayClient::GetAndResetAvgPingMs() {
-  uint64_t sum = ping_sample_sum_us_.exchange(0, std::memory_order_relaxed);
-  uint64_t count = ping_sample_count_.exchange(0, std::memory_order_relaxed);
-  return count ? (double)sum / (double)count / 1000.0 : 0.0;
+void NetplayClient::AddRemotePad(uint8_t pidx, int32_t frame, const uint8_t* data) {
+  remote_pad_queue_[pidx].push_front(std::make_unique<Pad>(frame, data));
+  remote_pad_history_[pidx].emplace_front(frame, data);
+  if (remote_pad_history_[pidx].size() > DROP_REPORT_INPUT_COUNT) remote_pad_history_[pidx].pop_back();
+}
+
+// Network thread only. Finds the players we just lost and tells the other players which inputs we have for them. Those
+// reports add to the player's inputs, so once they have had time to arrive the newest input is the one everyone should
+// have. Returns whether we are still waiting on any reports. Port of Slippi 3.7.0's ProcessPlayerDrops.
+bool NetplayClient::ProcessPlayerDrops() {
+  bool waiting = false;
+  const uint64_t now = time_ms();
+  for (int i = 0; i < remote_player_count_; ++i) {
+    const uint8_t port = match_info_.remote[i].player_idx;
+    if (player_active_[port].load(std::memory_order_acquire)) continue;
+    // ForceDisconnect sets the status before marking the players: if we are the one leaving, nobody else is affected.
+    if (status_.load(std::memory_order_acquire) == ConnectStatus::DISCONNECTED) return false;
+    int32_t last_frame;
+    { std::lock_guard<std::mutex> lk(pad_mutex_); last_frame = remote_pad_history_[i].empty() ? 0 : remote_pad_history_[i].front().frame; }
+    if (player_drop_times_ms_[port] == 0) {
+      host::log("slippi: lost player %u, last input frame %d", port, last_frame);
+      player_drop_times_ms_[port] = now;
+      SendPlayerDropReport(port);
+    }
+    if (despawn_frames_[port].load(std::memory_order_acquire) != 0) continue;
+    if (now - player_drop_times_ms_[port] < (uint64_t)DROP_REPORT_WAIT_MS) { waiting = true; continue; }
+    host::log("slippi: settled on player %u: last input frame %d, despawn frame %d", port, last_frame, last_frame + DROP_DESPAWN_FRAMES);
+    despawn_frames_[port].store(last_frame + DROP_DESPAWN_FRAMES, std::memory_order_release);
+  }
+  return waiting;
+}
+
+// Network thread only.
+void NetplayClient::SendPlayerDropReport(uint8_t port) {
+  Packet spac;
+  spac << (uint8_t)NP_MSG_SLIPPI_PLAYER_DROP << player_idx_ << port;
+  {
+    std::lock_guard<std::mutex> lk(pad_mutex_);
+    const auto& history = remote_pad_history_[PlayerIdxFromPort(port)];
+    spac << (history.empty() ? (int32_t)0 : history.front().frame) << (uint8_t)history.size();
+    for (const auto& pad : history) spac.append(pad.buf, PAD_WIRE_SIZE);
+  }
+  Send(spac);
+}
+
+// Network thread only. Adds any inputs we were missing from a report about a dropped player, most recent first. They are
+// the real inputs, so they work as if the player had sent them to us; the game rolls back if they differ.
+void NetplayClient::AddPlayerDropReportInputs(uint8_t pidx, int32_t last_frame, uint8_t input_count, const uint8_t* inputs) {
+  std::lock_guard<std::mutex> lk(pad_mutex_);
+  const int32_t head_frame = remote_pad_queue_[pidx].empty() ? 0 : remote_pad_queue_[pidx].front()->frame;
+  const int64_t missing = (int64_t)last_frame - (int64_t)head_frame;
+  if (missing > 128) { host::log("slippi: player drop packet contained too many frames (%lld)", (long long)missing); return; }
+  for (int64_t i = missing - 1; i >= 0; --i) {
+    uint8_t pad[PAD_WIRE_SIZE] = {};
+    if (i < input_count) {
+      std::memcpy(pad, &inputs[i * PAD_WIRE_SIZE], PAD_WIRE_SIZE);
+    } else {
+      // DROP_REPORT_INPUT_COUNT should prevent this. The queue cannot have gaps, so repeat an input; the desync detection
+      // catches it if it differs from the real one.
+      host::log("slippi: player drop packet is missing frame %lld", (long long)((int64_t)last_frame - i));
+      if (!remote_pad_queue_[pidx].empty()) std::memcpy(pad, remote_pad_queue_[pidx].front()->buf, PAD_WIRE_SIZE);
+    }
+    AddRemotePad(pidx, (int32_t)((int64_t)last_frame - i), pad);
+  }
+}
+
+// Once we settle on a dropped player's last input it repeats. These go in the same queue as real inputs since they are
+// just as final, so the game does not need to know the player is gone.
+void NetplayClient::FillDroppedPlayerInputs(int32_t frame) {
+  std::lock_guard<std::mutex> lk(pad_mutex_);
+  for (int i = 0; i < remote_player_count_; ++i) {
+    if (despawn_frames_[match_info_.remote[i].player_idx].load(std::memory_order_acquire) == 0) continue;
+    auto& queue = remote_pad_queue_[i];
+    if (queue.empty()) queue.push_front(std::make_unique<Pad>(0));
+    while (queue.front()->frame < frame) queue.push_front(std::make_unique<Pad>(queue.front()->frame + 1, queue.front()->buf));
+  }
 }
 int32_t NetplayClient::CalcTimeOffsetUs() {
   std::vector<int> offsets;
@@ -778,7 +970,9 @@ DesyncRecoveryResp NetplayClient::GetDesyncRecoveryState() {
     if (std::abs((int)r.state.seconds_remaining - (int)s.seconds_remaining) > 1) { r.is_error = true; return r; }
     if (s.seconds_remaining > r.state.seconds_remaining) r.state.seconds_remaining = s.seconds_remaining;
     for (int j = 0; j < 4; ++j) {
-      auto& f = r.state.fighters[i]; auto& g = s.fighters[i];   // (index i, as in Dolphin)
+      // f starts as our own synced state for fighter j and ends up as the reconciled one; g is what remote player i
+      // reported for it (3.7.0 fixed the old fighters[i] indexing).
+      auto& f = r.state.fighters[j]; auto& g = s.fighters[j];
       if (f.stocks_remaining != g.stocks_remaining) { r.is_error = true; return r; }
       if (std::abs((int)f.current_health - (int)g.current_health) > 25) { r.is_error = true; return r; }
       if (g.current_health < f.current_health) f.current_health = g.current_health;
@@ -788,6 +982,254 @@ DesyncRecoveryResp NetplayClient::GetDesyncRecoveryState() {
 }
 
 // ---------------------------------------------------------------- matchmaking
+#if !defined(__APPLE__)
+// The websocket transport is Apple-only (slippi_ws_apple.mm); elsewhere every connect fails cleanly.
+struct ws::Connection::State {};
+ws::Connection::Connection(std::shared_ptr<State> state) : state_(std::move(state)) {}
+ws::Connection::~Connection() = default;
+std::unique_ptr<ws::Connection> ws::Connection::open(const std::string&, int, int, const std::atomic<bool>*, std::string* error) {
+  if (error) *error = "websocket transport not available on this platform";
+  return nullptr;
+}
+bool ws::Connection::send_text(const std::string&, std::string*) { return false; }
+ws::Event ws::Connection::receive(std::string*, int, std::string*) { return ws::Event::FAILED; }
+void ws::Connection::close() {}
+#endif
+// Slippi 3.7.0 matchmaking. The conversation with the service runs over a websocket on a worker
+// of its own (MmSession, a port of slippi-rust-extensions matchmaking/src/client.rs); this class
+// owns the UDP socket that will be used for netplay, learns its public address through STUN,
+// keeps its NAT mapping alive while queued, and connects to the opponents once a match arrives.
+namespace {
+constexpr const char* MM_PROD_URL = "wss://matchmaking.slippi.gg/v1/queue";
+constexpr const char* MM_DEV_URL = "wss://matchmaking-dev.slippi.gg/v1/queue";
+constexpr const char* MM_URL_ENV_VAR = "SLIPPI_MM_URL";   // overrides the service URL, for local testing
+constexpr int MM_CONNECT_TIMEOUT_MS = 5000;
+constexpr int MM_HANDSHAKE_READ_TIMEOUT_MS = 10000;
+constexpr int MM_POLL_READ_TIMEOUT_MS = 250;
+constexpr int MM_CONNECT_ATTEMPTS = 3;
+// How long after losing a queued ticket's connection we keep trying to resume. The service drops a
+// silent ticket after thirty seconds.
+constexpr auto MM_RESUME_WINDOW = std::chrono::seconds(15);
+constexpr int MM_RETRY_DELAY_MS = 1000;
+// How long a connection may go without the service acknowledging its join or resume.
+constexpr auto MM_JOIN_TIMEOUT = std::chrono::seconds(5);
+// The service sends a status message every few seconds while a ticket is queued. After this long
+// without any frame we send a ping, and after the liveness timeout the connection counts as lost.
+constexpr auto MM_PING_AFTER = std::chrono::seconds(5);
+constexpr auto MM_LIVENESS_TIMEOUT = std::chrono::seconds(15);
+enum MmState { MM_IDLE = 0, MM_CONNECTING = 1, MM_QUEUED = 2, MM_MATCHED = 3, MM_FAILED = 4 };
+
+std::string mm_url() {
+  const char* env = std::getenv(MM_URL_ENV_VAR);
+  if (env && *env) return env;
+  return std::string(SLIPPI_SEMVER).find("dev") != std::string::npos ? MM_DEV_URL : MM_PROD_URL;
+}
+}  // namespace
+
+struct MmSession {
+  std::atomic<int> state{MM_CONNECTING};
+  std::atomic<bool> cancel{false};
+  std::mutex mutex;
+  bool has_result = false;
+  std::string result_json, error, latest_version;
+  bool cancelled() const { return cancel.load(); }
+  void fail(const std::string& message) {
+    host::log("slippi: [Matchmaking] %s", message.c_str());
+    { std::lock_guard<std::mutex> lock(mutex); error = message; }
+    state = MM_FAILED;
+  }
+};
+
+namespace {
+// One session runs at a time across the process (the Rust client lives on the EXI device): starting
+// a new one cancels the previous, which then leaves the queue on its own.
+std::mutex g_mm_session_mutex;
+std::weak_ptr<MmSession> g_mm_current_session;
+
+class MmSessionRun {
+ public:
+  MmSessionRun(std::shared_ptr<MmSession> shared, std::string url, std::string join)
+      : shared_(std::move(shared)), url_(std::move(url)), join_(std::move(join)) {}
+
+  void run() {
+    int connect_failures = 0;
+    for (;;) {
+      if (shared_->cancelled()) { shared_->state = MM_IDLE; return; }
+      std::string err;
+      auto socket = ws::Connection::open(url_, MM_CONNECT_TIMEOUT_MS, MM_CONNECT_TIMEOUT_MS + MM_HANDSHAKE_READ_TIMEOUT_MS,
+                                         &shared_->cancel, &err);
+      if (!socket) {
+        if (shared_->cancelled()) { shared_->state = MM_IDLE; return; }
+        host::log("slippi: [Matchmaking] Connect failed: %s", err.c_str());
+        if (give_up(++connect_failures) || sleep_unless_cancelled(MM_RETRY_DELAY_MS)) return;
+        continue;
+      }
+      connect_failures = 0;
+      const std::string first = has_ticket_ ? protocol::resume(ticket_id_, token_).dump() : join_;
+      if (!socket->send_text(first, &err)) {
+        host::log("slippi: [Matchmaking] Failed to send first message: %s", err.c_str());
+        socket->close();
+        if (give_up(++connect_failures) || sleep_unless_cancelled(MM_RETRY_DELAY_MS)) return;
+        continue;
+      }
+      switch (serve(*socket)) {
+        case Ended::DONE: return;
+        case Ended::JOIN_TIMEOUT: shared_->fail("Failed to join mm queue"); return;
+        case Ended::LOST:
+          if (!has_ticket_) { shared_->fail("Lost connection to the mm server"); return; }
+          if (!has_deadline_) { has_deadline_ = true; resume_deadline_ = Clock::now() + MM_RESUME_WINDOW; }
+          else if (Clock::now() >= resume_deadline_) { shared_->fail("Lost connection to the mm server"); return; }
+          host::log("slippi: [Matchmaking] Connection lost, resuming ticket");
+          if (sleep_unless_cancelled(MM_RETRY_DELAY_MS)) return;
+          break;
+      }
+    }
+  }
+
+ private:
+  using Clock = std::chrono::steady_clock;
+  enum class Ended { DONE, LOST, JOIN_TIMEOUT };
+
+  // A failed connect ends the session past the resume window when resuming, after a few attempts
+  // when first joining.
+  bool give_up(int connect_failures) {
+    const bool give_up = has_deadline_ ? Clock::now() >= resume_deadline_ : connect_failures >= MM_CONNECT_ATTEMPTS;
+    if (give_up) shared_->fail(has_ticket_ ? "Lost connection to the mm server" : "Failed to connect to mm server");
+    return give_up;
+  }
+
+  // Runs one connection until the session ends or the connection drops.
+  Ended serve(ws::Connection& socket) {
+    const auto opened = Clock::now();
+    auto last_frame = opened;
+    bool pinged = false;
+    acknowledged_ = false;
+    for (;;) {
+      if (shared_->cancelled()) {
+        socket.send_text(protocol::simple("cancel").dump());
+        socket.close();
+        shared_->state = MM_IDLE;
+        return Ended::DONE;
+      }
+      std::string text, detail;
+      switch (socket.receive(&text, MM_POLL_READ_TIMEOUT_MS, &detail)) {
+        case ws::Event::TEXT: {
+          last_frame = Clock::now();
+          pinged = false;
+          Ended ended;
+          if (handle(text, socket, ended)) return ended;
+          break;
+        }
+        case ws::Event::CLOSED:
+          host::log("slippi: [Matchmaking] Server closed connection: %s", detail.c_str());
+          return Ended::LOST;
+        case ws::Event::CONTROL:   // binary, ping and pong frames carry nothing but prove the service is there
+          last_frame = Clock::now();
+          pinged = false;
+          break;
+        case ws::Event::TIMEOUT: break;
+        case ws::Event::FAILED:
+          host::log("slippi: [Matchmaking] Read failed: %s", detail.c_str());
+          return Ended::LOST;
+      }
+      if (!acknowledged_ && Clock::now() - opened >= MM_JOIN_TIMEOUT) {
+        host::log("slippi: [Matchmaking] Service did not acknowledge the connection in time");
+        socket.close();
+        return has_ticket_ ? Ended::LOST : Ended::JOIN_TIMEOUT;
+      }
+      const auto idle = Clock::now() - last_frame;
+      if (idle >= MM_LIVENESS_TIMEOUT) {
+        host::log("slippi: [Matchmaking] Nothing from the service for %lld ms, connection lost",
+                  (long long)std::chrono::duration_cast<std::chrono::milliseconds>(idle).count());
+        socket.close();
+        return Ended::LOST;
+      }
+      if (idle >= MM_PING_AFTER && !pinged) {
+        pinged = true;
+        socket.send_text(protocol::simple("ping").dump());
+      }
+    }
+  }
+
+  // Handles one server message. Returns true (with `ended`) when the connection is done.
+  bool handle(const std::string& text, ws::Connection& socket, Ended& ended) {
+    const auto msg = protocol::parse_server_message(text);
+    switch (msg.kind) {
+      case protocol::ServerMessage::MALFORMED:
+        host::log("slippi: [Matchmaking] Ignoring malformed message");
+        return false;
+      case protocol::ServerMessage::JOINED:
+        if (msg.fields_ok) {
+          host::log("slippi: [Matchmaking] Ticket %s accepted", msg.ticket_id.c_str());
+          has_ticket_ = true; ticket_id_ = msg.ticket_id; token_ = msg.token;
+          acknowledged_ = true;
+          has_deadline_ = false;   // the service took us back, so the next drop gets a full resume window
+          shared_->state = MM_QUEUED;
+        }
+        return false;
+      case protocol::ServerMessage::MATCH:
+        if (msg.fields_ok) host::log("slippi: [Matchmaking] Match found: %s (host: %s)", msg.match_id.c_str(), msg.is_host ? "true" : "false");
+        else host::log("slippi: [Matchmaking] Match message unreadable");
+        { std::lock_guard<std::mutex> lock(shared_->mutex); shared_->result_json = text; shared_->has_result = true; }
+        shared_->state = MM_MATCHED;
+        socket.close();
+        ended = Ended::DONE;
+        return true;
+      case protocol::ServerMessage::ERROR: {
+        // The service knows a newer build exists when it says so; remembered for players whose update check is broken.
+        if (msg.fields_ok && !msg.latest_version.empty()) { std::lock_guard<std::mutex> lock(shared_->mutex); shared_->latest_version = msg.latest_version; }
+        shared_->fail(msg.fields_ok ? msg.error : "Received an error from the mm server");
+        socket.close();
+        ended = Ended::DONE;
+        return true;
+      }
+      default: return false;   // status and anything newer
+    }
+  }
+
+  // Sleeps in small steps so a cancel is noticed. Returns true if cancelled.
+  bool sleep_unless_cancelled(int total_ms) {
+    const auto start = Clock::now();
+    while (Clock::now() - start < std::chrono::milliseconds(total_ms)) {
+      if (shared_->cancelled()) { shared_->state = MM_IDLE; return true; }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return false;
+  }
+
+  std::shared_ptr<MmSession> shared_;
+  std::string url_, join_;
+  bool has_ticket_ = false;
+  std::string ticket_id_, token_;
+  bool has_deadline_ = false;
+  Clock::time_point resume_deadline_;
+  bool acknowledged_ = false;
+};
+
+// Begins a session (cancelling any previous one) on a worker that is never joined, so cancelling
+// does not wait on a connect or handshake in progress; once flagged it touches only its own state.
+std::shared_ptr<MmSession> mm_start_session(const UserInfo& me, const protocol::MatchRequest& request) {
+  const auto nat = stun::classify_nat(request.stun[0], request.stun[1]);
+  host::log("slippi: [Matchmaking] NAT type: %s", stun::nat_type_name(nat));   // the addresses themselves stay out of the log
+  std::string join = protocol::join(me, request, SLIPPI_SEMVER).dump();
+  std::string url = mm_url();
+  auto session = std::make_shared<MmSession>();
+  {
+    std::lock_guard<std::mutex> lock(g_mm_session_mutex);
+    if (auto previous = g_mm_current_session.lock()) previous->cancel = true;
+    g_mm_current_session = session;
+  }
+  host::log("slippi: [Matchmaking] Starting session against %s", url.c_str());
+  std::thread([session, url = std::move(url), join = std::move(join)]() mutable {
+#if defined(__APPLE__)
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+#endif
+    MmSessionRun(std::move(session), std::move(url), std::move(join)).run();
+  }).detach();
+  return session;
+}
+}  // namespace
+
 Matchmaking::LocalPeer Matchmaking::local_peer;
 uint16_t Matchmaking::forced_port = 0;
 
@@ -800,7 +1242,6 @@ Matchmaking::~Matchmaking() {
   terminateMmConnection();
 }
 void Matchmaking::FindMatch(MatchSearchSettings settings) {
-  is_mm_connected_ = false;
   search_settings_ = settings;
   error_msg_.clear();
   state_ = INITIALIZING;
@@ -820,31 +1261,23 @@ void Matchmaking::MatchmakeThread() {
       default: break;
     }
   }
-  terminateMmConnection();
-}
-void Matchmaking::disconnectFromServer() {
-  is_mm_connected_ = false;
-  if (!server_) return;
-  enet_peer_disconnect(server_, 0);
-  ENetEvent ev;
-  while (enet_host_service(client_, &ev, 3000) > 0) {
-    if (ev.type == ENET_EVENT_TYPE_RECEIVE) enet_packet_destroy(ev.packet);
-    else if (ev.type == ENET_EVENT_TYPE_DISCONNECT) { server_ = nullptr; return; }
-  }
-  enet_peer_reset(server_);
-  server_ = nullptr;
+  terminateMmConnection();   // leave the queue if still in it and free the port
 }
 void Matchmaking::terminateMmConnection() {
-  disconnectFromServer();
+  in_queue_ = false;
+  if (session_) { session_->cancel = true; session_.reset(); }
   if (client_) { enet_host_destroy(client_); client_ = nullptr; }
 }
 
-static std::string local_address_string(ENetAddress* mm_address) {
+// Set up and connect a UDP socket (no packets are sent) so the OS picks the interface it would
+// use to reach `remote`; that interface's address is the LAN address opponents behind the same
+// public IP can use.
+static std::string local_address_string(ENetAddress* remote) {
   ENetSocket s = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
   if (s == ENET_SOCKET_NULL) return "";
   ENetAddress a;
   std::string out;
-  if (enet_socket_connect(s, mm_address) != -1 && enet_socket_get_address(s, &a) != -1) {
+  if (enet_socket_connect(s, remote) != -1 && enet_socket_get_address(s, &a) != -1) {
     struct in_addr in; in.s_addr = a.host;
     char buf[INET_ADDRSTRLEN]{};
     if (inet_ntop(AF_INET, &in, buf, sizeof buf)) out = buf;
@@ -853,27 +1286,50 @@ static std::string local_address_string(ENetAddress* mm_address) {
   return out;
 }
 
-static int mm_send(ENetPeer* server, const json& msg) {
-  std::string s = msg.dump();
-  ENetPacket* p = enet_packet_create(s.c_str(), s.size(), ENET_PACKET_FLAG_RELIABLE);
-  return enet_peer_send(server, 0, p);
-}
-static int mm_receive(ENetHost* client, json& msg, int timeout_ms) {
-  const int step = 250;
-  int attempts = std::max(timeout_ms, step) / step;
-  for (int i = 0; i < attempts; ++i) {
-    ENetEvent ev;
-    int net = enet_host_service(client, &ev, step);
-    if (net <= 0) continue;
-    if (ev.type == ENET_EVENT_TYPE_RECEIVE) {
-      std::string s((const char*)ev.packet->data, ev.packet->dataLength);
-      enet_packet_destroy(ev.packet);
-      try { msg = json::parse(s); } catch (const std::exception& e) { host::log("slippi: bad matchmaking JSON: %s", e.what()); return -3; }
-      return 0;
+// Sends a STUN binding request to the given server from the netplay socket and reads back the
+// public address the server saw it come from: three tries of 500 ms each.
+bool Matchmaking::stunBindingRequest(uint32_t host_addr, uint16_t port, stun::Observation& result) {
+  uint8_t request[stun::REQUEST_LEN];
+  stun::build_binding_request(request);
+  ENetAddress server; server.host = host_addr; server.port = port;
+  ENetBuffer send_buf; send_buf.data = request; send_buf.dataLength = sizeof request;
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    const int sent = enet_socket_send(client_->socket, &server, &send_buf, 1);
+    if (sent != (int)sizeof request) { host::log("slippi: [Matchmaking] STUN send failed with %d", sent); return false; }
+    const uint64_t start = time_ms();
+    while (time_ms() - start < 500) {
+      if (is_mm_terminated_) return false;
+      enet_uint32 condition = ENET_SOCKET_WAIT_RECEIVE;
+      if (enet_socket_wait(client_->socket, &condition, 100) != 0) { host::log("slippi: [Matchmaking] STUN wait failed"); return false; }
+      if (!(condition & ENET_SOCKET_WAIT_RECEIVE)) continue;
+      uint8_t response[512];
+      ENetBuffer recv_buf; recv_buf.data = response; recv_buf.dataLength = sizeof response;
+      ENetAddress from;
+      const int received = enet_socket_receive(client_->socket, &from, &recv_buf, 1);
+      if (received <= 0) continue;
+      if (stun::parse_binding_response(request, response, (size_t)received, result)) return true;
     }
-    if (ev.type == ENET_EVENT_TYPE_DISCONNECT) return -2;
   }
-  return -1;
+  return false;
+}
+
+// Keeps the NAT mapping for the netplay socket alive while queued. Any reply is drained so the
+// netplay host does not find it later.
+void Matchmaking::sendStunKeepalive() {
+  last_keepalive_ms_ = time_ms();
+  if (!client_ || !has_stun_addr_) return;
+  uint8_t request[stun::REQUEST_LEN];
+  stun::build_binding_request(request);
+  ENetAddress server; server.host = stun_host_; server.port = stun_port_;
+  ENetBuffer send_buf; send_buf.data = request; send_buf.dataLength = sizeof request;
+  enet_socket_send(client_->socket, &server, &send_buf, 1);
+  enet_uint32 condition = ENET_SOCKET_WAIT_RECEIVE;
+  if (enet_socket_wait(client_->socket, &condition, 100) == 0 && (condition & ENET_SOCKET_WAIT_RECEIVE)) {
+    uint8_t response[512];
+    ENetBuffer recv_buf; recv_buf.data = response; recv_buf.dataLength = sizeof response;
+    ENetAddress from;
+    enet_socket_receive(client_->socket, &from, &recv_buf, 1);
+  }
 }
 
 void Matchmaking::startMatchmaking() {
@@ -907,118 +1363,116 @@ void Matchmaking::startMatchmaking() {
     return;
   }
 
+  // The host is bound to the port we will play on. Talking to the STUN servers through its socket
+  // creates the NAT mapping opponents will use and tells us what it is.
   for (int retry = 0; !client_ && retry < 15; ++retry) {
     host_port_ = forced_port ? forced_port : 41000 + (int)(rng() % 10000);
     ENetAddress addr; addr.host = ENET_HOST_ANY; addr.port = (enet_uint16)host_port_;
     client_ = enet_host_create(&addr, 1, 3, 0, 0);
   }
-  if (!client_) { state_ = ERROR_ENCOUNTERED; error_msg_ = "Failed to create mm client"; return; }
+  if (!client_) { state_ = ERROR_ENCOUNTERED; error_msg_ = "Failed to create mm client"; host::log("slippi: [Matchmaking] Failed to create client"); return; }
   prioritize_socket(client_->socket);
-  ENetAddress addr;
-  enet_address_set_host(&addr, "mm.slippi.gg");
-  addr.port = 43113;
-  server_ = enet_host_connect(client_, &addr, 3, 0);
-  if (!server_) { state_ = ERROR_ENCOUNTERED; error_msg_ = "Failed to start connection to mm server"; return; }
-  int attempts = 0;
-  while (!is_mm_connected_) {
-    ENetEvent ev;
-    int net = enet_host_service(client_, &ev, 500);
-    if (net <= 0 || ev.type != ENET_EVENT_TYPE_CONNECT) {
-      if (++attempts >= 20) { state_ = ERROR_ENCOUNTERED; error_msg_ = "Failed to connect to mm server"; host::log("slippi: cannot reach mm.slippi.gg"); return; }
-      continue;
-    }
-    client_->intercept = intercept_callback;
-    is_mm_connected_ = true;
-    host::log("slippi: connected to matchmaking server");
+  host::log("slippi: [Matchmaking] Port to use: %d", host_port_);
+
+  std::vector<ENetAddress> stun_addrs;
+  for (const auto& server : STUN_SERVERS) {
+    ENetAddress addr;
+    if (enet_address_set_host(&addr, server[0]) != 0) { host::log("slippi: [Matchmaking] Failed to resolve STUN server %s", server[0]); continue; }
+    addr.port = (enet_uint16)std::atoi(server[1]);
+    stun_addrs.push_back(addr);
   }
-  std::string lan = local_address_string(&addr);
+  has_stun_addr_ = !stun_addrs.empty();
+  if (has_stun_addr_) { stun_host_ = stun_addrs[0].host; stun_port_ = stun_addrs[0].port; }
+
+  // Determine the local IP address. Opponents behind the same public IP (same LAN, same VPN node,
+  // same CGNAT) can reach us on it.
+  std::string lan = has_stun_addr_ ? local_address_string(&stun_addrs[0]) : "";
   std::string lan_addr = lan.empty() ? "" : lan + ":" + std::to_string(host_port_);
-  std::vector<uint8_t> code_buf(search_settings_.connect_code.begin(), search_settings_.connect_code.end());
-  json req;
-  req["type"] = "create-ticket";
-  req["user"] = {{"uid", me.uid}, {"playKey", me.play_key}, {"connectCode", me.connect_code}, {"displayName", me.display_name}};
-  req["search"] = {{"mode", (int)search_settings_.mode}, {"connectCode", code_buf}};
-  req["appVersion"] = SLIPPI_SEMVER;
-  req["ipAddressLan"] = lan_addr;
-  mm_send(server_, req);
-  json resp;
-  if (mm_receive(client_, resp, 5000) != 0) { state_ = ERROR_ENCOUNTERED; error_msg_ = "Failed to join mm queue"; return; }
-  if (jget(resp, "type", "") != "create-ticket-resp") { state_ = ERROR_ENCOUNTERED; error_msg_ = "Invalid response when joining mm queue"; host::log("slippi: mm response: %s", resp.dump().c_str()); return; }
-  std::string err = jget(resp, "error", "");
-  if (!err.empty()) { state_ = ERROR_ENCOUNTERED; error_msg_ = err; host::log("slippi: mm error: %s", err.c_str()); return; }
+  host::log("slippi: [Matchmaking] Sending LAN address: %s", lan_addr.c_str());
+
+  // Ask two servers what public address they see, walking the list in order so a network that
+  // blocks the first entries still gets an answer. The addresses themselves are never logged.
+  protocol::MatchRequest request;
+  for (const auto& addr : stun_addrs) {
+    if (!request.stun[0].answered) {
+      if (stunBindingRequest(addr.host, addr.port, request.stun[0])) { stun_host_ = addr.host; stun_port_ = addr.port; }   // keepalives go to a server known to answer
+    } else if (stunBindingRequest(addr.host, addr.port, request.stun[1])) {
+      break;
+    }
+  }
+  last_keepalive_ms_ = time_ms();
+  const int answers = (request.stun[0].answered ? 1 : 0) + (request.stun[1].answered ? 1 : 0);
+  if (answers == 0) host::log("slippi: [Matchmaking] STUN lookup failed, the service will use the address it observes");
+  else host::log("slippi: [Matchmaking] STUN servers answered: %d of 2", answers);
+
+  request.mode = (uint8_t)search_settings_.mode;
+  request.connect_code = search_settings_.connect_code;
+  request.netplay_port = (uint16_t)host_port_;
+  request.lan_addr = lan_addr;
+  // A cancel that arrived during STUN must not start a session nobody will poll.
+  if (is_mm_terminated_) return;
+  session_ = mm_start_session(me, request);
   state_ = MATCHMAKING;
-  host::log("slippi: matchmaking ticket created");
+  host::log("slippi: [Matchmaking] Search started");
 }
 
 void Matchmaking::handleMatchmaking() {
   if (state_ != MATCHMAKING) return;
-  json resp;
-  int r = mm_receive(client_, resp, 2000);
-  if (r == -1) return;
-  if (r != 0) { state_ = ERROR_ENCOUNTERED; error_msg_ = "Lost connection to the mm server"; return; }
-  if (jget(resp, "type", "") != "get-ticket-resp") { state_ = ERROR_ENCOUNTERED; error_msg_ = "Invalid response when getting mm status"; return; }
-  std::string err = jget(resp, "error", "");
-  std::string latest = jget(resp, "latestVersion", "");
-  if (!err.empty()) {
-    if (!latest.empty()) user_->OverwriteLatestVersion(latest);
-    state_ = ERROR_ENCOUNTERED; error_msg_ = err;
-    host::log("slippi: mm error: %s", err.c_str());
+  const int session_state = session_ ? session_->state.load() : MM_IDLE;
+  if (session_state != MM_CONNECTING && session_state != MM_QUEUED) in_queue_ = false;
+  switch (session_state) {
+    case MM_CONNECTING:
+    case MM_QUEUED:
+      in_queue_ = session_state == MM_QUEUED;
+      if (has_stun_addr_ && time_ms() - last_keepalive_ms_ >= STUN_KEEPALIVE_INTERVAL_MS) sendStunKeepalive();
+      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+      return;
+    case MM_FAILED: {
+      std::string message, latest;
+      { std::lock_guard<std::mutex> lock(session_->mutex); message = session_->error; latest = session_->latest_version; }
+      session_.reset();
+      if (!latest.empty()) user_->OverwriteLatestVersion(latest);   // force the latest version for people whose file updates don't work
+      error_msg_ = message;
+      host::log("slippi: [Matchmaking] Received error from server: %s", message.c_str());
+      state_ = ERROR_ENCOUNTERED;
+      return;
+    }
+    case MM_MATCHED: break;
+    default:
+      // The session ended without a result, which only happens if it was cancelled out from under us.
+      session_.reset();
+      state_ = ERROR_ENCOUNTERED;
+      error_msg_ = "Matchmaking was cancelled";
+      return;
+  }
+
+  std::string result_text;
+  bool has_result;
+  { std::lock_guard<std::mutex> lock(session_->mutex); has_result = session_->has_result; result_text = std::move(session_->result_json); session_->has_result = false; }
+  session_.reset();
+  if (!has_result) {
+    host::log("slippi: [Matchmaking] Match result was missing");
+    state_ = ERROR_ENCOUNTERED; error_msg_ = "Invalid response when getting mm status";
     return;
   }
+  json resp = json::parse(result_text, nullptr, false);
+  protocol::MatchResult match;
+  if (resp.is_discarded() || !protocol::match_result(resp, match)) {
+    host::log("slippi: [Matchmaking] Match result could not be parsed");
+    state_ = ERROR_ENCOUNTERED; error_msg_ = "Invalid response when getting mm status";
+    return;
+  }
+
   netplay_client_ = nullptr;
-  remote_ips_.clear();
-  player_info_.clear();
-  std::string match_id = jget(resp, "matchId", "");
-  host::log("slippi: match id %s", match_id.c_str());
-  auto queue = resp["players"];
-  if (queue.is_array()) {
-    std::string local_external_ip;
-    for (auto& el : queue) {
-      UserInfo p;
-      bool is_local = jget(el, "isLocalPlayer", false);
-      p.uid = jget(el, "uid", "");
-      p.display_name = jget(el, "displayName", "");
-      p.connect_code = jget(el, "connectCode", "");
-      p.port = jget(el, "port", 0);
-      p.is_bot = jget(el, "isBot", false);
-      if (el.count("chatMessages") && el["chatMessages"].is_array()) {
-        for (auto& m : el["chatMessages"]) if (m.is_string()) p.chat_messages.push_back(m.get<std::string>());
-      }
-      if (p.chat_messages.size() != 16) p.chat_messages = User::GetDefaultChatMessages();
-      if (el.count("rank") && el["rank"].is_object()) {
-        auto& rk = el["rank"];
-        p.ranked_rating = jget(rk, "rating", 0.0f);
-        p.ranked_update_count = jget(rk, "updateCount", 0);
-        p.ranked_global_placement = jget(rk, "globalPlacement", 0);
-        p.ranked_regional_placement = jget(rk, "regionalPlacement", 0);
-      }
-      player_info_.push_back(p);
-      if (is_local) {
-        std::string ip = jget(el, "ipAddress", "1.1.1.1:123");
-        local_external_ip = ip.substr(0, ip.find(':'));
-        local_player_index_ = p.port - 1;
-      }
-    }
-    for (auto& el : queue) {
-      if (jget(el, "port", 0) - 1 == local_player_index_) continue;
-      std::string ext = jget(el, "ipAddress", "1.1.1.1:123");
-      std::string lan = jget(el, "ipAddressLan", "1.1.1.1:123");
-      if (ext.substr(0, ext.find(':')) != local_external_ip || lan.empty()) remote_ips_.push_back(ext);
-      else remote_ips_.push_back(lan);
-    }
-  }
-  is_host_ = jget(resp, "isHost", false);
-  allowed_stages_.clear();
-  if (resp.count("stages") && resp["stages"].is_array()) for (auto& s : resp["stages"]) if (s.is_number()) allowed_stages_.push_back((uint16_t)s.get<int>());
-  if (allowed_stages_.empty()) {
-    allowed_stages_ = {0x3, 0x8, 0x1C, 0x1F, 0x20};
-    if (player_info_.size() == 2) allowed_stages_.push_back(0x2);
-  }
-  mm_result_.id = match_id;
-  mm_result_.players = player_info_;
-  mm_result_.stages = allowed_stages_;
-  mm_result_.items = jget(resp, "items", 0u);
-  terminateMmConnection();
+  host::log("slippi: match id %s", match.result.id.c_str());
+  for (auto& p : match.result.players) if (p.chat_messages.size() != 16) p.chat_messages = User::GetDefaultChatMessages();
+  player_info_ = match.result.players;
+  remote_ips_ = match.remote_ips;
+  local_player_index_ = match.local_player_index;
+  is_host_ = match.is_host;
+  allowed_stages_ = match.result.stages;
+  mm_result_ = match.result;
+  terminateMmConnection();   // free the port so the netplay client can bind it
   state_ = OPPONENT_CONNECTING;
   host::log("slippi: opponent found (decider: %d)", is_host_);
 }
@@ -1055,15 +1509,7 @@ void Matchmaking::handleConnecting() {
 int Matchmaking::GetPlayerRank(uint8_t port) const {
   if (port >= player_info_.size()) return 0;
   const UserInfo& info = player_info_[port];
-  float r = info.ranked_rating;
-  if (info.ranked_update_count < 5) return 0;
-  static const float bounds[] = {765.42f, 913.71f, 1054.86f, 1188.87f, 1315.74f, 1435.47f, 1548.06f, 1653.51f, 1751.82f,
-                                 1842.99f, 1927.02f, 2003.91f, 2073.66f, 2136.27f, 2191.74f};
-  for (int i = 0; i < 15; ++i) if (r <= bounds[i]) return i + 1;
-  if (r >= 2191.75f && (info.ranked_global_placement > 0 || info.ranked_regional_placement > 0)) return 19;
-  if (r <= 2274.99f) return 16;
-  if (r <= 2350.0f) return 17;
-  return 18;
+  return protocol::player_rank(info.ranked_rating, info.ranked_update_count, info.ranked_global_placement, info.ranked_regional_placement);
 }
 
 }  // namespace slippi

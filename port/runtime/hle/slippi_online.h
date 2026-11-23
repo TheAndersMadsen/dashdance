@@ -17,6 +17,7 @@ struct Config {
   int delay = 2;                 // Slippi Online input delay (frames)
   int chat = 0;                  // 0 enabled, 1 direct only, 2 disabled
   bool show_local_rank = true, show_opponent_rank = true;
+  bool input_suggestions = true;   // Slippi 3.7.0 "reduce high ping effects by 16.7 ms" (default on, as in Dolphin)
 };
 Config& config();
 
